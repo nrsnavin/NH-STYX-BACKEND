@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: nhstyx-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nhstyx
+      POSTGRES_PASSWORD: nhstyx
+      POSTGRES_DB: nhstyx
+    ports:
+      - '5432:5432'
+    volumes:
+      - nhstyx_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nhstyx -d nhstyx']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      target: production
+    container_name: nhstyx-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://nhstyx:nhstyx@db:5432/nhstyx?schema=public
+      JWT_ACCESS_SECRET: change-me-access-secret-in-production
+      JWT_REFRESH_SECRET: change-me-refresh-secret-in-production
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+    ports:
+      - '4000:4000'
+    command: sh -c "npx prisma migrate deploy && node dist/index.js"
+
+volumes:
+  nhstyx_pgdata:

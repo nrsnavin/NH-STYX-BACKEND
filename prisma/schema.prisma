@@ -1,0 +1,345 @@
+// NH Styx — B2B wholesale ordering platform
+// Prisma schema. Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  AGENT
+  CUSTOMER
+}
+
+enum UserStatus {
+  PENDING // registered, awaiting approval/verification
+  ACTIVE
+  SUSPENDED
+}
+
+enum AddressType {
+  BILLING
+  SHIPPING
+}
+
+enum OrderStatus {
+  DRAFT
+  PLACED
+  CONFIRMED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  RETURNED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIALLY_PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  UPI
+  CARD
+  CREDIT // pay-later / store credit
+}
+
+// ---------------------------------------------------------------------------
+// Identity & profiles
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  phone        String?    @unique
+  passwordHash String
+  fullName     String
+  role         UserRole   @default(CUSTOMER)
+  status       UserStatus @default(PENDING)
+
+  customerProfile CustomerProfile?
+  agentProfile    AgentProfile?
+
+  refreshTokens RefreshToken[]
+  ordersPlaced  Order[]        @relation("OrderCreatedBy")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+  @@index([status])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// Business profile for a garment store / boutique owner.
+model CustomerProfile {
+  id           String  @id @default(uuid())
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String  @unique
+  businessName String
+  gstNumber    String?
+  businessType String? // e.g. "Boutique", "Garment Store", "Wholesaler"
+  creditLimit  Decimal @default(0) @db.Decimal(12, 2)
+
+  // The sales agent that manages this customer (optional).
+  agent   AgentProfile? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  agentId String?
+
+  addresses Address[]
+  cart      Cart?
+  orders    Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([agentId])
+  @@map("customer_profiles")
+}
+
+/// Sales agent (field/inside rep) who services customers.
+model AgentProfile {
+  id           String  @id @default(uuid())
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String  @unique
+  employeeCode String  @unique
+  region       String?
+
+  customers CustomerProfile[]
+  orders    Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("agent_profiles")
+}
+
+model Address {
+  id         String          @id @default(uuid())
+  customer   CustomerProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId String
+  type       AddressType     @default(SHIPPING)
+  line1      String
+  line2      String?
+  city       String
+  state      String
+  postalCode String
+  country    String          @default("India")
+  isDefault  Boolean         @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@map("addresses")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Category {
+  id          String  @id @default(uuid())
+  name        String
+  slug        String  @unique
+  description String?
+  imageUrl    String?
+  isActive    Boolean @default(true)
+
+  // Self-relation for sub-categories.
+  parent   Category?  @relation("CategoryToSubcategory", fields: [parentId], references: [id], onDelete: SetNull)
+  parentId String?
+  children Category[] @relation("CategoryToSubcategory")
+
+  products Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([parentId])
+  @@map("categories")
+}
+
+model Product {
+  id          String  @id @default(uuid())
+  name        String
+  slug        String  @unique
+  description String?
+  brand       String?
+  imageUrls   String[] @default([])
+  isActive    Boolean @default(true)
+
+  category   Category @relation(fields: [categoryId], references: [id])
+  categoryId String
+
+  variants ProductVariant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("products")
+}
+
+/// A purchasable variant (size/color) of a product, carrying price & stock.
+model ProductVariant {
+  id            String  @id @default(uuid())
+  product       Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId     String
+  sku           String  @unique
+  size          String?
+  color         String?
+  // Wholesale (per-unit) price.
+  price         Decimal @db.Decimal(12, 2)
+  mrp           Decimal? @db.Decimal(12, 2)
+  // Minimum order quantity for B2B.
+  minOrderQty   Int     @default(1)
+  stockQuantity Int     @default(0)
+  isActive      Boolean @default(true)
+
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@map("product_variants")
+}
+
+// ---------------------------------------------------------------------------
+// Cart
+// ---------------------------------------------------------------------------
+
+model Cart {
+  id         String          @id @default(uuid())
+  customer   CustomerProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId String          @unique
+  items      CartItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("carts")
+}
+
+model CartItem {
+  id        String         @id @default(uuid())
+  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  cartId    String
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  variantId String
+  quantity  Int            @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cartId, variantId])
+  @@index([cartId])
+  @@map("cart_items")
+}
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+model Order {
+  id          String      @id @default(uuid())
+  orderNumber String      @unique
+  customer    CustomerProfile @relation(fields: [customerId], references: [id])
+  customerId  String
+
+  // Agent who placed/owns the order (optional — customers can self-serve).
+  agent   AgentProfile? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  agentId String?
+
+  // User account that created the order (customer or agent).
+  createdBy   User   @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  createdById String
+
+  status        OrderStatus   @default(PLACED)
+  paymentStatus PaymentStatus @default(PENDING)
+
+  subtotal Decimal @db.Decimal(12, 2)
+  taxTotal Decimal @default(0) @db.Decimal(12, 2)
+  discount Decimal @default(0) @db.Decimal(12, 2)
+  total    Decimal @db.Decimal(12, 2)
+
+  shippingAddress Json? // snapshot of the address at order time
+  notes           String?
+
+  items    OrderItem[]
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([agentId])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String         @id @default(uuid())
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId   String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  variantId String
+
+  // Snapshot fields so historical orders stay accurate if catalog changes.
+  productName String
+  sku         String
+  unitPrice   Decimal @db.Decimal(12, 2)
+  quantity    Int
+  lineTotal   Decimal @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model Payment {
+  id        String        @id @default(uuid())
+  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId   String
+  amount    Decimal       @db.Decimal(12, 2)
+  method    PaymentMethod
+  status    PaymentStatus @default(PENDING)
+  reference String?
+  paidAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@map("payments")
+}
