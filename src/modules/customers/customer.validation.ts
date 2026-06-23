@@ -22,5 +22,6 @@ export const updateCustomerSchema = z.object({
     creditLimitPaise: z.number().int().nonnegative().optional(),
     creditDays: z.number().int().nonnegative().optional(),
     isActive: z.boolean().optional(),
+    storeId: z.string().uuid().nullable().optional(),
   }),
 });

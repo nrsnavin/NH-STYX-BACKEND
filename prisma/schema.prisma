@@ -84,24 +84,32 @@ enum PaymentStatus {
 
 // Internal team members (your staff). Distinct from Customer.
 model User {
-  id        String   @id @default(uuid())
-  name      String
-  email     String   @unique
-  phone     String?
-  password  String // bcrypt hash
-  role      Role     @default(AGENT)
-  isActive  Boolean  @default(true)
+  id       String  @id @default(uuid())
+  name     String
+  email    String  @unique
+  phone    String?
+  password String // bcrypt hash
+  role     Role    @default(AGENT)
+  isActive Boolean @default(true)
+
+  // Agents belong to exactly one store and only see that store's work.
+  // Admins have no store (storeId = null) and see everything.
+  storeId String?
+  store   Store?  @relation(fields: [storeId], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([storeId])
 }
 
 // Shop owners — your customers. Phone is the primary identity in India.
 model Customer {
-  id        String   @id @default(uuid())
+  id        String  @id @default(uuid())
   shopName  String
   ownerName String?
   // Store the 10-digit number; +91 country code handled in app/validation.
-  phone     String   @unique
+  phone     String  @unique
   email     String?
   password  String? // bcrypt hash; null when using OTP-only login
   gstin     String? // 15-char GSTIN; required only if they want GST invoices
@@ -111,6 +119,11 @@ model Customer {
   creditDays       Int     @default(0) // e.g. 15 / 30 day terms
   isActive         Boolean @default(true)
 
+  // The store that serves this customer's city (assigned at registration,
+  // reassignable by admin). Their catalog/pricing/fulfilment come from it.
+  storeId String?
+  store   Store?  @relation(fields: [storeId], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -119,6 +132,50 @@ model Customer {
   orders    Order[]
 
   @@index([phone])
+  @@index([storeId])
+}
+
+// ------------------------------------------------------------
+//  Stores (city-specific fulfilment + agent assignment)
+// ------------------------------------------------------------
+
+// A physical store that stocks & ships for a set of cities, staffed by its
+// own agents. Holds its own GST origin state (single state for now; the
+// per-store stateCode lets tax go multi-state later without a rewrite).
+model Store {
+  id          String  @id @default(uuid())
+  name        String
+  code        String  @unique // short handle, e.g. "PUN", "MUM"
+  phone       String?
+  addressLine String?
+  city        String // home city
+  state       String // Indian state name
+  stateCode   String // 2-digit GST state code (e.g. "27" = Maharashtra)
+  pincode     String?
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  serviceAreas ServiceArea[]
+  agents       User[]
+  customers    Customer[]
+  inventory    StoreProduct[]
+  orders       Order[]
+
+  @@index([stateCode])
+}
+
+// Cities/areas a store serves. A city maps to exactly one store, so customer
+// routing is a single lookup on the normalized city name.
+model ServiceArea {
+  id      String @id @default(uuid())
+  city    String @unique // normalized (lower-cased, trimmed) city/area name
+  label   String // display name as entered
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
 }
 
 // Indian address. state + pincode matter for tax and delivery.
@@ -134,7 +191,7 @@ model Address {
   state     String // Indian state name (decides CGST/SGST vs IGST)
   stateCode String? // 2-digit GST state code (e.g. "27" = Maharashtra)
   pincode   String // 6-digit PIN
-  isDefault Boolean  @default(false)
+  isDefault Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -159,51 +216,75 @@ model Category {
   children  Category[] @relation("CategoryTree")
 
   products  Product[]
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 }
 
 model Product {
-  id          String      @id @default(uuid())
+  id          String   @id @default(uuid())
   name        String
-  slug        String?     @unique
+  slug        String?  @unique
   description String?
   brand       String?
   categoryId  String
-  category    Category    @relation(fields: [categoryId], references: [id])
+  category    Category @relation(fields: [categoryId], references: [id])
 
   unit           ProductUnit @default(PIECE)
   hsnCode        String? // HSN code for GST invoicing
   gstRatePercent Int         @default(0) // GST slab: 0 / 5 / 12 / 18 / 28
 
-  mrpPaise   Int? // printed MRP, for display/discount reference
-  pricePaise Int // your base selling price, GST-EXCLUSIVE, in paise
-  moqQty     Int  @default(1) // minimum order quantity
-  stockQty   Int  @default(0)
+  mrpPaise Int? // printed MRP, for display/discount reference (catalog default)
+  moqQty   Int  @default(1) // minimum order quantity
 
   imageUrl  String?
   isActive  Boolean  @default(true) // hide without deleting
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  priceTiers PriceTier[]
-  cartItems  CartItem[]
-  orderItems OrderItem[]
+  // Price & stock are PER-STORE — see StoreProduct. Product is the shared
+  // catalog definition (name, category, HSN, GST rate, MOQ, image).
+  storeProducts StoreProduct[]
+  cartItems     CartItem[]
+  orderItems    OrderItem[]
 
   @@index([categoryId])
 }
 
-// Quantity-break wholesale pricing. "Buy >= minQty -> pay pricePaise each."
-// A product with no tiers simply uses Product.pricePaise.
-model PriceTier {
-  id         String  @id @default(uuid())
-  productId  String
-  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  minQty     Int // tier applies at this quantity and above
-  pricePaise Int // per-unit price at this tier, GST-exclusive
+// Per-store stock + price for a shared catalog product. A product is only
+// sellable in a store once a StoreProduct row exists for it.
+model StoreProduct {
+  id        String  @id @default(uuid())
+  storeId   String
+  store     Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  @@unique([productId, minQty])
+  pricePaise Int // this store's base selling price, GST-EXCLUSIVE, in paise
+  mrpPaise   Int? // optional per-store MRP override (else Product.mrpPaise)
+  stockQty   Int     @default(0)
+  isActive   Boolean @default(true) // store can delist without affecting others
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  priceTiers StorePriceTier[]
+
+  @@unique([storeId, productId])
+  @@index([storeId])
   @@index([productId])
+}
+
+// Quantity-break wholesale pricing, per store. "Buy >= minQty -> pay pricePaise
+// each." A store-product with no tiers simply uses StoreProduct.pricePaise.
+model StorePriceTier {
+  id             String       @id @default(uuid())
+  storeProductId String
+  storeProduct   StoreProduct @relation(fields: [storeProductId], references: [id], onDelete: Cascade)
+  minQty         Int // tier applies at this quantity and above
+  pricePaise     Int // per-unit price at this tier, GST-exclusive
+
+  @@unique([storeProductId, minQty])
+  @@index([storeProductId])
 }
 
 // ------------------------------------------------------------
@@ -247,6 +328,10 @@ model Order {
   customer    Customer    @relation(fields: [customerId], references: [id])
   status      OrderStatus @default(PENDING)
 
+  // Fulfilling store (ships the order). Drives stock + GST origin state.
+  storeId String?
+  store   Store?  @relation(fields: [storeId], references: [id])
+
   // ---- Shipping address SNAPSHOT (so later edits don't alter the order) ----
   shipName    String
   shipLine1   String
@@ -257,8 +342,9 @@ model Order {
   shipPhone   String
 
   // ---- GST snapshot ----
-  gstinUsed     String? // customer's GSTIN at order time, if any
-  placeOfSupply String // state used to decide CGST/SGST vs IGST
+  gstinUsed       String? // customer's GSTIN at order time, if any
+  placeOfSupply   String // buyer state used to decide CGST/SGST vs IGST
+  sellerStateCode String? // fulfilling store's GST state code at order time
 
   // ---- Money (all integer paise) ----
   subtotalPaise Int // sum of line subtotals, pre-tax
@@ -287,6 +373,7 @@ model Order {
   payments Payment[] // multiple allowed (partial / credit settlements)
 
   @@index([customerId])
+  @@index([storeId])
   @@index([status])
   @@index([paymentStatus])
 }

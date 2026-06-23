@@ -2,6 +2,10 @@ import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { hashPassword, verifyPassword } from '../../utils/password';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../utils/jwt';
+import { findStoreForCity } from '../../utils/storeContext';
+
+// Store summary shown to a shop owner ("Shipped from …, <city>").
+const storeSelect = { select: { id: true, name: true, city: true, code: true } } as const;
 
 // --- Staff (internal team) ---------------------------------------------------
 
@@ -39,11 +43,15 @@ export async function customerRegister(input: {
   password: string;
   email?: string;
   gstin?: string;
+  city: string;
 }) {
   const existing = await prisma.customer.findUnique({ where: { phone: input.phone } });
   if (existing) {
     throw ApiError.conflict('An account with this phone number already exists');
   }
+
+  // Route the shop to the store that serves its city (null if not covered yet).
+  const storeId = await findStoreForCity(input.city);
 
   const customer = await prisma.customer.create({
     data: {
@@ -52,10 +60,19 @@ export async function customerRegister(input: {
       phone: input.phone,
       email: input.email,
       gstin: input.gstin,
+      storeId,
       password: await hashPassword(input.password),
       cart: { create: {} },
     },
-    select: { id: true, shopName: true, ownerName: true, phone: true, email: true, gstin: true },
+    select: {
+      id: true,
+      shopName: true,
+      ownerName: true,
+      phone: true,
+      email: true,
+      gstin: true,
+      store: storeSelect,
+    },
   });
 
   return {
@@ -66,7 +83,10 @@ export async function customerRegister(input: {
 }
 
 export async function customerLogin(input: { phone: string; password: string }) {
-  const customer = await prisma.customer.findUnique({ where: { phone: input.phone } });
+  const customer = await prisma.customer.findUnique({
+    where: { phone: input.phone },
+    include: { store: storeSelect },
+  });
   if (!customer || !customer.password || !(await verifyPassword(input.password, customer.password))) {
     throw ApiError.unauthorized('Invalid phone or password');
   }
@@ -82,6 +102,7 @@ export async function customerLogin(input: { phone: string; password: string }) 
       phone: customer.phone,
       email: customer.email,
       gstin: customer.gstin,
+      store: customer.store,
     },
     accessToken: signAccessToken({ sub: customer.id, type: 'CUSTOMER' }),
     refreshToken: signRefreshToken({ sub: customer.id, type: 'CUSTOMER' }),
@@ -100,6 +121,7 @@ export async function customerProfile(customerId: string) {
       gstin: true,
       creditLimitPaise: true,
       creditDays: true,
+      store: storeSelect,
     },
   });
   if (!customer) throw ApiError.notFound('Customer not found');

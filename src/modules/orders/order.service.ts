@@ -10,6 +10,7 @@ import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { env } from '../../config/env';
 import { computeLineTax, isIntraState, resolveUnitPrice } from '../../utils/pricing';
+import { getStaffStoreId } from '../../utils/storeContext';
 
 async function nextOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
   const year = new Date().getFullYear();
@@ -25,8 +26,15 @@ interface CreateOrderInput {
 
 /** Checkout: turns the customer's cart into a GST-computed order. */
 export async function createOrder(customerId: string, input: CreateOrderInput) {
-  const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+  const customer = await prisma.customer.findUnique({
+    where: { id: customerId },
+    include: { store: true },
+  });
   if (!customer) throw ApiError.notFound('Customer not found');
+  if (!customer.storeId || !customer.store) {
+    throw ApiError.badRequest('Your shop is not linked to a store yet.');
+  }
+  const store = customer.store;
 
   const address = await prisma.address.findUnique({ where: { id: input.addressId } });
   if (!address || address.customerId !== customerId) {
@@ -35,13 +43,21 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
 
   const cart = await prisma.cart.findUnique({
     where: { customerId },
-    include: { items: { include: { product: { include: { priceTiers: true } } } } },
+    include: { items: { include: { product: true } } },
   });
   if (!cart || cart.items.length === 0) {
     throw ApiError.badRequest('Your cart is empty');
   }
 
-  const intra = isIntraState(address.stateCode, address.state);
+  // Per-store price/stock/tiers for everything in the cart.
+  const storeProducts = await prisma.storeProduct.findMany({
+    where: { storeId: store.id, productId: { in: cart.items.map((i) => i.productId) } },
+    include: { priceTiers: true },
+  });
+  const spByProduct = new Map(storeProducts.map((sp) => [sp.productId, sp]));
+
+  // GST seller side = the fulfilling store's state (multi-state ready).
+  const intra = isIntraState(address.stateCode, address.state, store.stateCode, store.state);
 
   let subtotalPaise = 0;
   let cgstTotal = 0;
@@ -50,15 +66,18 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
 
   const orderItems = cart.items.map((item) => {
     const { product, quantity } = item;
-    if (!product.isActive) throw ApiError.badRequest(`${product.name} is no longer available`);
+    const sp = spByProduct.get(item.productId);
+    if (!product.isActive || !sp || !sp.isActive) {
+      throw ApiError.badRequest(`${product.name} is no longer available`);
+    }
     if (quantity < product.moqQty) {
       throw ApiError.badRequest(`Minimum order quantity for ${product.name} is ${product.moqQty}`);
     }
-    if (quantity > product.stockQty) {
+    if (quantity > sp.stockQty) {
       throw ApiError.badRequest(`Insufficient stock for ${product.name}`);
     }
 
-    const unitPricePaise = resolveUnitPrice(product.pricePaise, product.priceTiers, quantity);
+    const unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, quantity);
     const lineSubtotalPaise = unitPricePaise * quantity;
     const tax = computeLineTax(lineSubtotalPaise, product.gstRatePercent, intra);
 
@@ -109,6 +128,7 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       data: {
         orderNumber,
         customerId,
+        storeId: store.id,
         status: initialStatus,
         shipName: address.label ? `${customer.shopName} (${address.label})` : customer.shopName,
         shipLine1: address.line1,
@@ -119,6 +139,7 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
         shipPhone: customer.phone,
         gstinUsed: customer.gstin,
         placeOfSupply: address.state,
+        sellerStateCode: store.stateCode,
         subtotalPaise,
         discountPaise,
         deliveryPaise,
@@ -136,10 +157,10 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       include: { items: true },
     });
 
-    // Decrement stock.
+    // Decrement per-store stock.
     for (const item of cart.items) {
-      await tx.product.update({
-        where: { id: item.productId },
+      await tx.storeProduct.update({
+        where: { storeId_productId: { storeId: store.id, productId: item.productId } },
         data: { stockQty: { decrement: item.quantity } },
       });
     }
@@ -173,7 +194,13 @@ export async function listOrders(
 ) {
   const where: Prisma.OrderWhereInput = {};
   if (params.status) where.status = params.status;
-  if (actor.type === 'CUSTOMER') where.customerId = actor.sub;
+  if (actor.type === 'CUSTOMER') {
+    where.customerId = actor.sub;
+  } else {
+    // Agents are scoped to their store; admins (storeId null) see every store.
+    const storeId = await getStaffStoreId(actor.sub);
+    if (storeId) where.storeId = storeId;
+  }
 
   const [items, total] = await Promise.all([
     prisma.order.findMany({
@@ -181,6 +208,7 @@ export async function listOrders(
       include: {
         items: true,
         customer: { select: { shopName: true, phone: true } },
+        store: { select: { id: true, name: true, city: true } },
       },
       skip: (params.page - 1) * params.limit,
       take: params.limit,
@@ -210,11 +238,19 @@ export async function getOrder(
       items: true,
       payments: true,
       customer: { select: { shopName: true, phone: true, gstin: true } },
+      store: { select: { id: true, name: true, city: true } },
     },
   });
   if (!order) throw ApiError.notFound('Order not found');
   if (actor.type === 'CUSTOMER' && order.customerId !== actor.sub) {
     throw ApiError.forbidden('You cannot view this order');
+  }
+  if (actor.type === 'STAFF') {
+    // Agents may only open orders from their own store; admins see all.
+    const storeId = await getStaffStoreId(actor.sub);
+    if (storeId && order.storeId !== storeId) {
+      throw ApiError.forbidden('This order belongs to another store');
+    }
   }
   return order;
 }

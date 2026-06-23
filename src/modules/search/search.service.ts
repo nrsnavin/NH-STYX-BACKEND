@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
+import { composeStoreProduct } from '../products/product.service';
 
 export interface AiSearchFilters {
   keywords: string[];
@@ -110,7 +111,8 @@ async function aiInterpret(
   };
 }
 
-export async function aiSearch(query: string) {
+/** Store-scoped natural-language search: results come from the customer's store. */
+export async function aiSearch(storeId: string, query: string) {
   const categories = await prisma.category.findMany({ select: { name: true, slug: true } });
 
   let interpretation: Interpretation;
@@ -126,7 +128,9 @@ export async function aiSearch(query: string) {
   }
 
   const { keywords, categorySlug, maxPricePaise } = interpretation.filters;
-  const where: Prisma.ProductWhereInput = { isActive: true };
+
+  // Catalog-side filters (category, keywords).
+  const productWhere: Prisma.ProductWhereInput = { isActive: true };
   if (categorySlug) {
     // Match the category and any of its sub-categories (tree-aware).
     const category = await prisma.category.findUnique({
@@ -134,23 +138,28 @@ export async function aiSearch(query: string) {
       include: { children: { select: { id: true } } },
     });
     if (category) {
-      where.categoryId = { in: [category.id, ...category.children.map((c) => c.id)] };
+      productWhere.categoryId = { in: [category.id, ...category.children.map((c) => c.id)] };
     }
   }
-  if (maxPricePaise) {
-    where.pricePaise = { lte: maxPricePaise };
-  }
   if (keywords.length) {
-    where.OR = keywords.flatMap((k) => [
+    productWhere.OR = keywords.flatMap((k) => [
       { name: { contains: k, mode: Prisma.QueryMode.insensitive } },
       { brand: { contains: k, mode: Prisma.QueryMode.insensitive } },
       { description: { contains: k, mode: Prisma.QueryMode.insensitive } },
     ]);
   }
 
-  const items = await prisma.product.findMany({
+  // Search only what the customer's store stocks; price filter uses store price.
+  const where: Prisma.StoreProductWhereInput = {
+    storeId,
+    isActive: true,
+    product: productWhere,
+    ...(maxPricePaise ? { pricePaise: { lte: maxPricePaise } } : {}),
+  };
+
+  const rows = await prisma.storeProduct.findMany({
     where,
-    include: { priceTiers: { orderBy: { minQty: 'asc' } }, category: { select: { id: true, name: true } } },
+    include: { product: { include: { category: true } }, priceTiers: true },
     take: 40,
     orderBy: { createdAt: 'desc' },
   });
@@ -159,6 +168,6 @@ export async function aiSearch(query: string) {
     reply: interpretation.reply,
     aiPowered: interpretation.aiPowered,
     filters: interpretation.filters,
-    items,
+    items: rows.map(composeStoreProduct),
   };
 }

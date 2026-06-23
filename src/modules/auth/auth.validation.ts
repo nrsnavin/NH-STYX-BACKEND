@@ -18,6 +18,8 @@ export const customerRegisterSchema = z.object({
     phone,
     password: z.string().min(8, 'Password must be at least 8 characters'),
     email: z.string().email().optional(),
+    // City decides which store serves this shop (catalog, pricing, fulfilment).
+    city: z.string().min(2, 'City is required'),
     gstin: z
       .string()
       .length(15, 'GSTIN must be 15 characters')

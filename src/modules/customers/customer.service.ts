@@ -13,19 +13,30 @@ const publicSelect = {
   creditDays: true,
   isActive: true,
   createdAt: true,
+  storeId: true,
+  store: { select: { id: true, name: true, city: true, code: true } },
 } satisfies Prisma.CustomerSelect;
 
-export async function listCustomers(params: { page: number; limit: number; search?: string }) {
-  const { page, limit, search } = params;
-  const where: Prisma.CustomerWhereInput = search
-    ? {
-        OR: [
-          { shopName: { contains: search, mode: Prisma.QueryMode.insensitive } },
-          { ownerName: { contains: search, mode: Prisma.QueryMode.insensitive } },
-          { phone: { contains: search } },
-        ],
-      }
-    : {};
+export async function listCustomers(params: {
+  page: number;
+  limit: number;
+  search?: string;
+  // When set (agent), only that store's customers are returned. Null = all (admin).
+  storeId?: string | null;
+}) {
+  const { page, limit, search, storeId } = params;
+  const where: Prisma.CustomerWhereInput = {
+    ...(storeId ? { storeId } : {}),
+    ...(search
+      ? {
+          OR: [
+            { shopName: { contains: search, mode: Prisma.QueryMode.insensitive } },
+            { ownerName: { contains: search, mode: Prisma.QueryMode.insensitive } },
+            { phone: { contains: search } },
+          ],
+        }
+      : {}),
+  };
 
   const [items, total] = await Promise.all([
     prisma.customer.findMany({
@@ -64,6 +75,7 @@ export async function updateCustomer(
     creditLimitPaise?: number;
     creditDays?: number;
     isActive?: boolean;
+    storeId?: string | null; // admin can reassign the serving store
   },
 ) {
   await prisma.customer.findUniqueOrThrow({ where: { id } }).catch(() => {

@@ -59,13 +59,23 @@ export function computeLineTax(
 /**
  * Whether a buyer's state matches the seller's state (intra-state supply).
  * Prefers the 2-digit GST state code; falls back to state-name comparison.
+ *
+ * The seller side defaults to the platform's configured state, but a per-store
+ * state can be passed so tax is computed from the *fulfilling store's* origin —
+ * this is what makes multi-state correct without touching call sites that don't
+ * yet pass a store.
  */
-export function isIntraState(buyerStateCode?: string | null, buyerStateName?: string | null): boolean {
+export function isIntraState(
+  buyerStateCode?: string | null,
+  buyerStateName?: string | null,
+  sellerStateCode: string = env.SELLER_STATE_CODE,
+  sellerStateName: string = env.SELLER_STATE_NAME,
+): boolean {
   if (buyerStateCode && buyerStateCode.trim()) {
-    return buyerStateCode.trim() === env.SELLER_STATE_CODE;
+    return buyerStateCode.trim() === sellerStateCode;
   }
   if (buyerStateName) {
-    return buyerStateName.trim().toLowerCase() === env.SELLER_STATE_NAME.toLowerCase();
+    return buyerStateName.trim().toLowerCase() === sellerStateName.toLowerCase();
   }
   return false;
 }
