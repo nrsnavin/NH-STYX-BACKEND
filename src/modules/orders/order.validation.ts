@@ -1,20 +1,11 @@
 import { z } from 'zod';
+import { OrderStatus, PaymentMethod } from '@prisma/client';
 
 export const createOrderSchema = z.object({
   body: z.object({
-    // Optional — required only when an ADMIN/AGENT places an order on behalf
-    // of a customer. CUSTOMERs order for their own profile.
-    customerId: z.string().uuid().optional(),
+    addressId: z.string().uuid(),
+    paymentMethod: z.nativeEnum(PaymentMethod),
     notes: z.string().optional(),
-    shippingAddressId: z.string().uuid().optional(),
-    items: z
-      .array(
-        z.object({
-          variantId: z.string().uuid(),
-          quantity: z.number().int().positive(),
-        }),
-      )
-      .min(1, 'An order needs at least one item'),
   }),
 });
 
@@ -22,18 +13,7 @@ export const listOrdersSchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(20),
-    status: z
-      .enum([
-        'DRAFT',
-        'PLACED',
-        'CONFIRMED',
-        'PACKED',
-        'SHIPPED',
-        'DELIVERED',
-        'CANCELLED',
-        'RETURNED',
-      ])
-      .optional(),
+    status: z.nativeEnum(OrderStatus).optional(),
   }),
 });
 
@@ -43,16 +23,23 @@ export const orderIdSchema = z.object({
 
 export const updateOrderStatusSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
+  body: z.object({ status: z.nativeEnum(OrderStatus) }),
+});
+
+export const recordPaymentSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
   body: z.object({
-    status: z.enum([
-      'DRAFT',
-      'PLACED',
-      'CONFIRMED',
-      'PACKED',
-      'SHIPPED',
-      'DELIVERED',
-      'CANCELLED',
-      'RETURNED',
-    ]),
+    method: z.nativeEnum(PaymentMethod),
+    amountPaise: z.number().int().positive(),
+    reference: z.string().optional(),
+  }),
+});
+
+export const razorpayVerifySchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    razorpayOrderId: z.string().min(3),
+    razorpayPaymentId: z.string().min(3),
+    razorpaySignature: z.string().min(3),
   }),
 });

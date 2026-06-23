@@ -1,14 +1,20 @@
-import crypto from 'node:crypto';
 import jwt, { JwtPayload, SignOptions } from 'jsonwebtoken';
+import { Role } from '@prisma/client';
 import { env } from '../config/env';
 import { ApiError } from './ApiError';
 
-export type UserRoleClaim = 'ADMIN' | 'AGENT' | 'CUSTOMER';
+/** Who the token belongs to: internal staff or a shop-owner customer. */
+export type ActorType = 'STAFF' | 'CUSTOMER';
 
 export interface AccessTokenPayload {
-  sub: string; // user id
-  email: string;
-  role: UserRoleClaim;
+  sub: string; // User.id (staff) or Customer.id
+  type: ActorType;
+  role?: Role; // only for STAFF (ADMIN | AGENT)
+}
+
+export interface RefreshTokenPayload {
+  sub: string;
+  type: ActorType;
 }
 
 const accessOptions: SignOptions = {
@@ -22,7 +28,7 @@ const refreshOptions: SignOptions = {
 export const signAccessToken = (payload: AccessTokenPayload): string =>
   jwt.sign(payload, env.JWT_ACCESS_SECRET, accessOptions);
 
-export const signRefreshToken = (payload: { sub: string }): string =>
+export const signRefreshToken = (payload: RefreshTokenPayload): string =>
   jwt.sign(payload, env.JWT_REFRESH_SECRET, refreshOptions);
 
 export const verifyAccessToken = (token: string): AccessTokenPayload => {
@@ -33,24 +39,10 @@ export const verifyAccessToken = (token: string): AccessTokenPayload => {
   }
 };
 
-export const verifyRefreshToken = (token: string): { sub: string } => {
+export const verifyRefreshToken = (token: string): RefreshTokenPayload => {
   try {
-    return jwt.verify(token, env.JWT_REFRESH_SECRET) as { sub: string } & JwtPayload;
+    return jwt.verify(token, env.JWT_REFRESH_SECRET) as RefreshTokenPayload & JwtPayload;
   } catch {
     throw ApiError.unauthorized('Invalid or expired refresh token');
   }
-};
-
-/** Refresh tokens are stored hashed (never in plaintext). */
-export const hashToken = (token: string): string =>
-  crypto.createHash('sha256').update(token).digest('hex');
-
-/** Reads the `exp` claim of a signed token and returns it as a Date. */
-export const getTokenExpiry = (token: string): Date => {
-  const decoded = jwt.decode(token) as JwtPayload | null;
-  if (!decoded?.exp) {
-    // Fallback: 7 days from now.
-    return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  }
-  return new Date(decoded.exp * 1000);
 };

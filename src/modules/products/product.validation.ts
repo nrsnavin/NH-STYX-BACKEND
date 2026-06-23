@@ -1,14 +1,9 @@
 import { z } from 'zod';
+import { ProductUnit } from '@prisma/client';
 
-const variantSchema = z.object({
-  sku: z.string().min(1),
-  size: z.string().optional(),
-  color: z.string().optional(),
-  price: z.number().nonnegative(),
-  mrp: z.number().nonnegative().optional(),
-  minOrderQty: z.number().int().positive().default(1),
-  stockQuantity: z.number().int().nonnegative().default(0),
-  isActive: z.boolean().optional(),
+const priceTier = z.object({
+  minQty: z.number().int().positive(),
+  pricePaise: z.number().int().nonnegative(),
 });
 
 export const listProductsSchema = z.object({
@@ -29,10 +24,17 @@ export const createProductSchema = z.object({
     name: z.string().min(2),
     description: z.string().optional(),
     brand: z.string().optional(),
-    imageUrls: z.array(z.string().url()).optional(),
     categoryId: z.string().uuid(),
+    unit: z.nativeEnum(ProductUnit).default(ProductUnit.PIECE),
+    hsnCode: z.string().optional(),
+    gstRatePercent: z.number().int().min(0).max(28).default(0),
+    mrpPaise: z.number().int().nonnegative().optional(),
+    pricePaise: z.number().int().nonnegative(),
+    moqQty: z.number().int().positive().default(1),
+    stockQty: z.number().int().nonnegative().default(0),
+    imageUrl: z.string().url().optional(),
     isActive: z.boolean().optional(),
-    variants: z.array(variantSchema).min(1, 'At least one variant is required'),
+    priceTiers: z.array(priceTier).optional(),
   }),
 });
 
@@ -42,9 +44,18 @@ export const updateProductSchema = z.object({
     name: z.string().min(2).optional(),
     description: z.string().optional(),
     brand: z.string().optional(),
-    imageUrls: z.array(z.string().url()).optional(),
     categoryId: z.string().uuid().optional(),
+    unit: z.nativeEnum(ProductUnit).optional(),
+    hsnCode: z.string().optional(),
+    gstRatePercent: z.number().int().min(0).max(28).optional(),
+    mrpPaise: z.number().int().nonnegative().nullable().optional(),
+    pricePaise: z.number().int().nonnegative().optional(),
+    moqQty: z.number().int().positive().optional(),
+    stockQty: z.number().int().nonnegative().optional(),
+    imageUrl: z.string().url().optional(),
     isActive: z.boolean().optional(),
+    // When provided, replaces the full tier set for the product.
+    priceTiers: z.array(priceTier).optional(),
   }),
 });
 

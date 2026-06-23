@@ -27,6 +27,17 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
 
+  // GST: your (seller) state. Decides CGST+SGST (intra-state) vs IGST (inter-state).
+  SELLER_STATE_CODE: z.string().default('27'), // 27 = Maharashtra
+  SELLER_STATE_NAME: z.string().default('Maharashtra'),
+
+  // Delivery fee applied at checkout (integer paise). 0 = free.
+  DELIVERY_FEE_PAISE: z.coerce.number().int().nonnegative().default(0),
+
+  // Razorpay (optional — gateway calls are stubbed when unset).
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),

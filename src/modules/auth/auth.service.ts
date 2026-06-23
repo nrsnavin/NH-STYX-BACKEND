@@ -1,152 +1,130 @@
-import { UserStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { hashPassword, verifyPassword } from '../../utils/password';
-import {
-  getTokenExpiry,
-  hashToken,
-  signAccessToken,
-  signRefreshToken,
-  verifyRefreshToken,
-  UserRoleClaim,
-} from '../../utils/jwt';
-import { LoginInput, RegisterInput } from './auth.validation';
+import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../utils/jwt';
 
-interface AuthUser {
-  id: string;
-  email: string;
-  role: UserRoleClaim;
-}
+// --- Staff (internal team) ---------------------------------------------------
 
-async function issueTokens(user: AuthUser) {
-  const accessToken = signAccessToken({ sub: user.id, email: user.email, role: user.role });
-  const refreshToken = signRefreshToken({ sub: user.id });
-
-  await prisma.refreshToken.create({
-    data: {
-      userId: user.id,
-      tokenHash: hashToken(refreshToken),
-      expiresAt: getTokenExpiry(refreshToken),
-    },
-  });
-
-  return { accessToken, refreshToken };
-}
-
-/** Self-service registration for a store/boutique owner (CUSTOMER role). */
-export async function register(input: RegisterInput) {
-  const existing = await prisma.user.findUnique({ where: { email: input.email } });
-  if (existing) {
-    throw ApiError.conflict('An account with this email already exists');
-  }
-
-  const passwordHash = await hashPassword(input.password);
-
-  const user = await prisma.user.create({
-    data: {
-      email: input.email,
-      phone: input.phone,
-      passwordHash,
-      fullName: input.fullName,
-      role: 'CUSTOMER',
-      status: UserStatus.ACTIVE,
-      customerProfile: {
-        create: {
-          businessName: input.businessName,
-          gstNumber: input.gstNumber,
-          businessType: input.businessType,
-          cart: { create: {} },
-        },
-      },
-    },
-    select: { id: true, email: true, role: true, fullName: true, status: true },
-  });
-
-  const tokens = await issueTokens({ id: user.id, email: user.email, role: user.role });
-  return { user, ...tokens };
-}
-
-export async function login(input: LoginInput) {
+export async function staffLogin(input: { email: string; password: string }) {
   const user = await prisma.user.findUnique({ where: { email: input.email } });
-  if (!user) {
+  if (!user || !(await verifyPassword(input.password, user.password))) {
     throw ApiError.unauthorized('Invalid email or password');
   }
-
-  const valid = await verifyPassword(input.password, user.passwordHash);
-  if (!valid) {
-    throw ApiError.unauthorized('Invalid email or password');
+  if (!user.isActive) {
+    throw ApiError.forbidden('Your account is disabled. Contact an administrator.');
   }
 
-  if (user.status === UserStatus.SUSPENDED) {
-    throw ApiError.forbidden('Your account has been suspended. Please contact support.');
-  }
-
-  const tokens = await issueTokens({ id: user.id, email: user.email, role: user.role });
   return {
-    user: {
-      id: user.id,
-      email: user.email,
-      fullName: user.fullName,
-      role: user.role,
-      status: user.status,
-    },
-    ...tokens,
+    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    accessToken: signAccessToken({ sub: user.id, type: 'STAFF', role: user.role }),
+    refreshToken: signRefreshToken({ sub: user.id, type: 'STAFF' }),
   };
 }
 
-/** Rotates a refresh token: revokes the old one and issues a fresh pair. */
-export async function refresh(token: string) {
-  const payload = verifyRefreshToken(token);
-  const tokenHash = hashToken(token);
-
-  const stored = await prisma.refreshToken.findUnique({ where: { tokenHash } });
-  if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
-    throw ApiError.unauthorized('Refresh token is invalid or expired');
-  }
-
-  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-  if (!user) {
-    throw ApiError.unauthorized('User no longer exists');
-  }
-
-  // Revoke the used token (rotation).
-  await prisma.refreshToken.update({
-    where: { id: stored.id },
-    data: { revokedAt: new Date() },
-  });
-
-  const tokens = await issueTokens({ id: user.id, email: user.email, role: user.role });
-  return tokens;
-}
-
-export async function logout(token: string) {
-  const tokenHash = hashToken(token);
-  await prisma.refreshToken.updateMany({
-    where: { tokenHash, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
-}
-
-export async function getProfile(userId: string) {
+export async function staffProfile(userId: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
+    select: { id: true, name: true, email: true, phone: true, role: true, isActive: true },
+  });
+  if (!user) throw ApiError.notFound('User not found');
+  return user;
+}
+
+// --- Customers (shop owners) -------------------------------------------------
+
+export async function customerRegister(input: {
+  shopName: string;
+  ownerName?: string;
+  phone: string;
+  password: string;
+  email?: string;
+  gstin?: string;
+}) {
+  const existing = await prisma.customer.findUnique({ where: { phone: input.phone } });
+  if (existing) {
+    throw ApiError.conflict('An account with this phone number already exists');
+  }
+
+  const customer = await prisma.customer.create({
+    data: {
+      shopName: input.shopName,
+      ownerName: input.ownerName,
+      phone: input.phone,
+      email: input.email,
+      gstin: input.gstin,
+      password: await hashPassword(input.password),
+      cart: { create: {} },
+    },
+    select: { id: true, shopName: true, ownerName: true, phone: true, email: true, gstin: true },
+  });
+
+  return {
+    customer,
+    accessToken: signAccessToken({ sub: customer.id, type: 'CUSTOMER' }),
+    refreshToken: signRefreshToken({ sub: customer.id, type: 'CUSTOMER' }),
+  };
+}
+
+export async function customerLogin(input: { phone: string; password: string }) {
+  const customer = await prisma.customer.findUnique({ where: { phone: input.phone } });
+  if (!customer || !customer.password || !(await verifyPassword(input.password, customer.password))) {
+    throw ApiError.unauthorized('Invalid phone or password');
+  }
+  if (!customer.isActive) {
+    throw ApiError.forbidden('Your account is disabled. Please contact support.');
+  }
+
+  return {
+    customer: {
+      id: customer.id,
+      shopName: customer.shopName,
+      ownerName: customer.ownerName,
+      phone: customer.phone,
+      email: customer.email,
+      gstin: customer.gstin,
+    },
+    accessToken: signAccessToken({ sub: customer.id, type: 'CUSTOMER' }),
+    refreshToken: signRefreshToken({ sub: customer.id, type: 'CUSTOMER' }),
+  };
+}
+
+export async function customerProfile(customerId: string) {
+  const customer = await prisma.customer.findUnique({
+    where: { id: customerId },
     select: {
       id: true,
-      email: true,
+      shopName: true,
+      ownerName: true,
       phone: true,
-      fullName: true,
-      role: true,
-      status: true,
-      customerProfile: {
-        select: { id: true, businessName: true, gstNumber: true, businessType: true },
-      },
-      agentProfile: {
-        select: { id: true, employeeCode: true, region: true },
-      },
+      email: true,
+      gstin: true,
+      creditLimitPaise: true,
+      creditDays: true,
     },
   });
-  if (!user) {
-    throw ApiError.notFound('User not found');
+  if (!customer) throw ApiError.notFound('Customer not found');
+  return customer;
+}
+
+// --- Shared ------------------------------------------------------------------
+
+/** Stateless refresh: validate the refresh token and re-issue a token pair. */
+export async function refresh(token: string) {
+  const payload = verifyRefreshToken(token);
+
+  if (payload.type === 'STAFF') {
+    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!user || !user.isActive) throw ApiError.unauthorized('Account no longer active');
+    return {
+      accessToken: signAccessToken({ sub: user.id, type: 'STAFF', role: user.role }),
+      refreshToken: signRefreshToken({ sub: user.id, type: 'STAFF' }),
+    };
   }
-  return user;
+
+  const customer = await prisma.customer.findUnique({ where: { id: payload.sub } });
+  if (!customer || !customer.isActive) throw ApiError.unauthorized('Account no longer active');
+  return {
+    accessToken: signAccessToken({ sub: customer.id, type: 'CUSTOMER' }),
+    refreshToken: signRefreshToken({ sub: customer.id, type: 'CUSTOMER' }),
+  };
 }

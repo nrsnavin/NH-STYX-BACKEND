@@ -44,11 +44,18 @@ docker compose up --build   # api + postgres, migrations auto-applied
 
 ## Seeded accounts
 
-| Role     | Email                | Password      |
-|----------|----------------------|---------------|
-| Admin    | admin@nhstyx.com     | `Admin@123`    |
-| Agent    | agent@nhstyx.com     | `Agent@123`    |
-| Customer | customer@nhstyx.com  | `Customer@123` |
+**Staff** (operations console — email + password):
+
+| Role  | Email             | Password    |
+|-------|-------------------|-------------|
+| Admin | admin@nhstyx.com  | `Admin@123` |
+| Agent | agent@nhstyx.com  | `Agent@123` |
+
+**Customer** (mobile app — phone + password):
+
+| Shop                    | Phone        | Password       |
+|-------------------------|--------------|----------------|
+| Trendy Threads Boutique | `9876543210` | `Customer@123` |
 
 ---
 
@@ -68,40 +75,51 @@ src/
 │   ├── error.middleware.ts# centralized error handler + 404
 │   └── validate.middleware.ts # Zod request validation
 ├── modules/               # feature-first modules
-│   ├── auth/              # register, login, refresh, logout, me
-│   ├── categories/        # category CRUD (admin)
-│   ├── products/          # product + variant CRUD, list/search
-│   └── orders/            # place order, list (role-aware), status
+│   ├── auth/              # staff + customer login, refresh, me
+│   ├── categories/        # category tree CRUD (admin)
+│   ├── products/          # flat products + GST + price tiers
+│   ├── cart/              # server-side customer cart
+│   ├── addresses/         # customer delivery addresses
+│   ├── orders/            # GST checkout, payments, status
+│   └── customers/         # staff customer management
 ├── routes/index.ts        # /health + module routers
-└── utils/                 # ApiError, asyncHandler, jwt, password, slug
+└── utils/                 # ApiError, asyncHandler, jwt, password, slug, pricing (GST)
 prisma/
-├── schema.prisma          # data model
+├── schema.prisma          # data model (integer paise, GST-ready)
 └── seed.ts                # demo data
 ```
 
+> **Money is integer paise** everywhere (₹250 → `25000`). Prices are
+> **GST-exclusive**; tax is computed at checkout from each product's
+> `gstRatePercent` and split **CGST+SGST** (intra-state) or **IGST**
+> (inter-state) based on the customer's state vs `SELLER_STATE_CODE`.
+
 ## API surface (v1, prefix `/api/v1`)
 
-| Method | Path                  | Auth        | Description                         |
-|--------|-----------------------|-------------|-------------------------------------|
-| GET    | `/health`             | public      | Service + DB health                 |
-| POST   | `/auth/register`      | public      | Register a store/boutique owner     |
-| POST   | `/auth/login`         | public      | Login, returns access+refresh       |
-| POST   | `/auth/refresh`       | public      | Rotate refresh token                |
-| POST   | `/auth/logout`        | public      | Revoke refresh token                |
-| GET    | `/auth/me`            | any         | Current user profile                |
-| GET    | `/categories`         | any         | List categories                     |
-| POST   | `/categories`         | ADMIN       | Create category                     |
-| PATCH  | `/categories/:id`     | ADMIN       | Update category                     |
-| DELETE | `/categories/:id`     | ADMIN       | Delete category                     |
-| GET    | `/products`           | any         | List/search products (paginated)    |
-| GET    | `/products/:id`       | any         | Product detail + variants           |
-| POST   | `/products`           | ADMIN       | Create product + variants           |
-| PATCH  | `/products/:id`       | ADMIN       | Update product                      |
-| DELETE | `/products/:id`       | ADMIN       | Delete product                      |
-| POST   | `/orders`             | any         | Place an order                      |
-| GET    | `/orders`             | any         | List orders (role-aware)            |
-| GET    | `/orders/:id`         | any         | Order detail                        |
-| PATCH  | `/orders/:id/status`  | ADMIN/AGENT | Advance order status                |
+| Method | Path                              | Auth        | Description                          |
+|--------|-----------------------------------|-------------|--------------------------------------|
+| GET    | `/health`                         | public      | Service + DB health                  |
+| POST   | `/auth/staff/login`               | public      | Staff login (email)                  |
+| GET    | `/auth/staff/me`                  | STAFF       | Current staff profile                |
+| POST   | `/auth/customer/register`         | public      | Register a shop (phone)              |
+| POST   | `/auth/customer/login`            | public      | Customer login (phone)               |
+| GET    | `/auth/customer/me`               | CUSTOMER    | Current customer profile             |
+| POST   | `/auth/refresh`                   | public      | Re-issue token pair (stateless)      |
+| GET    | `/categories`                     | any         | List category tree                   |
+| POST/PATCH/DELETE | `/categories...`       | ADMIN       | Manage categories                    |
+| GET    | `/products` · `/products/:id`     | any         | List/search · detail (+tiers)        |
+| POST/PATCH/DELETE | `/products...`         | ADMIN       | Manage products + price tiers        |
+| GET    | `/cart`                           | CUSTOMER    | Cart with tier-resolved pricing      |
+| POST   | `/cart/items`                     | CUSTOMER    | Add to cart                          |
+| PATCH/DELETE | `/cart/items/:productId`    | CUSTOMER    | Update qty / remove                  |
+| GET/POST/PATCH/DELETE | `/addresses...`    | CUSTOMER    | Manage delivery addresses            |
+| POST   | `/orders`                         | CUSTOMER    | Checkout cart → GST order            |
+| GET    | `/orders` · `/orders/:id`         | any         | List (role-aware) · detail           |
+| POST   | `/orders/:id/pay/razorpay/verify` | CUSTOMER    | Verify Razorpay payment              |
+| PATCH  | `/orders/:id/status`              | ADMIN/AGENT | Advance order status                 |
+| POST   | `/orders/:id/payments`            | ADMIN/AGENT | Record offline payment (COD/bank)    |
+| GET    | `/customers` · `/customers/:id`   | STAFF       | List / view customers                |
+| PATCH  | `/customers/:id`                  | ADMIN       | Update credit terms / status         |
 
 All protected routes expect `Authorization: Bearer <accessToken>`.
 

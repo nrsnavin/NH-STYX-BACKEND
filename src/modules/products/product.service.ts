@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, ProductUnit } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { slugify } from '../../utils/slug';
@@ -16,15 +16,16 @@ export async function listProducts(params: ListParams) {
   const where: Prisma.ProductWhereInput = {
     ...(categoryId ? { categoryId } : {}),
     ...(isActive !== undefined ? { isActive } : {}),
-    ...(search
-      ? { name: { contains: search, mode: Prisma.QueryMode.insensitive } }
-      : {}),
+    ...(search ? { name: { contains: search, mode: Prisma.QueryMode.insensitive } } : {}),
   };
 
   const [items, total] = await Promise.all([
     prisma.product.findMany({
       where,
-      include: { variants: true, category: { select: { id: true, name: true } } },
+      include: {
+        priceTiers: { orderBy: { minQty: 'asc' } },
+        category: { select: { id: true, name: true } },
+      },
       skip: (page - 1) * limit,
       take: limit,
       orderBy: { createdAt: 'desc' },
@@ -34,96 +35,111 @@ export async function listProducts(params: ListParams) {
 
   return {
     items,
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
 }
 
 export async function getProduct(id: string) {
   const product = await prisma.product.findUnique({
     where: { id },
-    include: { variants: true, category: true },
+    include: { priceTiers: { orderBy: { minQty: 'asc' } }, category: true },
   });
-  if (!product) {
-    throw ApiError.notFound('Product not found');
-  }
+  if (!product) throw ApiError.notFound('Product not found');
   return product;
 }
 
-interface VariantInput {
-  sku: string;
-  size?: string;
-  color?: string;
-  price: number;
-  mrp?: number;
-  minOrderQty?: number;
-  stockQuantity?: number;
-  isActive?: boolean;
+interface TierInput {
+  minQty: number;
+  pricePaise: number;
 }
 
-export async function createProduct(input: {
+interface CreateProductInput {
   name: string;
   description?: string;
   brand?: string;
-  imageUrls?: string[];
   categoryId: string;
+  unit?: ProductUnit;
+  hsnCode?: string;
+  gstRatePercent?: number;
+  mrpPaise?: number;
+  pricePaise: number;
+  moqQty?: number;
+  stockQty?: number;
+  imageUrl?: string;
   isActive?: boolean;
-  variants: VariantInput[];
-}) {
+  priceTiers?: TierInput[];
+}
+
+export async function createProduct(input: CreateProductInput) {
   return prisma.product.create({
     data: {
       name: input.name,
       slug: slugify(`${input.name}-${Date.now().toString(36)}`),
       description: input.description,
       brand: input.brand,
-      imageUrls: input.imageUrls ?? [],
       categoryId: input.categoryId,
+      unit: input.unit ?? ProductUnit.PIECE,
+      hsnCode: input.hsnCode,
+      gstRatePercent: input.gstRatePercent ?? 0,
+      mrpPaise: input.mrpPaise,
+      pricePaise: input.pricePaise,
+      moqQty: input.moqQty ?? 1,
+      stockQty: input.stockQty ?? 0,
+      imageUrl: input.imageUrl,
       isActive: input.isActive ?? true,
-      variants: {
-        create: input.variants.map((v) => ({
-          sku: v.sku,
-          size: v.size,
-          color: v.color,
-          price: v.price,
-          mrp: v.mrp,
-          minOrderQty: v.minOrderQty ?? 1,
-          stockQuantity: v.stockQuantity ?? 0,
-          isActive: v.isActive ?? true,
-        })),
-      },
+      priceTiers: input.priceTiers?.length
+        ? { create: input.priceTiers.map((t) => ({ minQty: t.minQty, pricePaise: t.pricePaise })) }
+        : undefined,
     },
-    include: { variants: true },
+    include: { priceTiers: { orderBy: { minQty: 'asc' } } },
   });
 }
 
 export async function updateProduct(
   id: string,
-  input: {
-    name?: string;
-    description?: string;
-    brand?: string;
-    imageUrls?: string[];
-    categoryId?: string;
-    isActive?: boolean;
-  },
+  input: Partial<CreateProductInput> & { mrpPaise?: number | null },
 ) {
-  const data: Prisma.ProductUpdateInput = {
-    description: input.description,
-    brand: input.brand,
-    imageUrls: input.imageUrls,
-    isActive: input.isActive,
-  };
-  if (input.name) {
-    data.name = input.name;
-  }
-  if (input.categoryId) {
-    data.category = { connect: { id: input.categoryId } };
-  }
-  return prisma.product.update({ where: { id }, data, include: { variants: true } });
+  const { priceTiers, name, categoryId, ...rest } = input;
+
+  return prisma.$transaction(async (tx) => {
+    const data: Prisma.ProductUpdateInput = {
+      description: rest.description,
+      brand: rest.brand,
+      unit: rest.unit,
+      hsnCode: rest.hsnCode,
+      gstRatePercent: rest.gstRatePercent,
+      mrpPaise: rest.mrpPaise,
+      pricePaise: rest.pricePaise,
+      moqQty: rest.moqQty,
+      stockQty: rest.stockQty,
+      imageUrl: rest.imageUrl,
+      isActive: rest.isActive,
+    };
+    if (name) {
+      data.name = name;
+      data.slug = slugify(`${name}-${Date.now().toString(36)}`);
+    }
+    if (categoryId) {
+      data.category = { connect: { id: categoryId } };
+    }
+
+    const product = await tx.product.update({ where: { id }, data });
+
+    // When priceTiers is supplied, replace the whole set.
+    if (priceTiers) {
+      await tx.priceTier.deleteMany({ where: { productId: id } });
+      if (priceTiers.length) {
+        await tx.priceTier.createMany({
+          data: priceTiers.map((t) => ({ productId: id, minQty: t.minQty, pricePaise: t.pricePaise })),
+        });
+      }
+    }
+
+    return tx.product.findUniqueOrThrow({
+      where: { id: product.id },
+      include: { priceTiers: { orderBy: { minQty: 'asc' } } },
+    });
+  });
 }
 
 export async function deleteProduct(id: string) {

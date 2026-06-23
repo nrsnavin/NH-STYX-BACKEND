@@ -5,7 +5,7 @@ declare global {
   namespace Express {
     interface Request {
       /** Populated by the `authenticate` middleware. */
-      user?: AccessTokenPayload;
+      auth?: AccessTokenPayload;
     }
   }
 }

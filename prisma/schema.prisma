@@ -1,5 +1,21 @@
-// NH Styx — B2B wholesale ordering platform
-// Prisma schema. Docs: https://pris.ly/d/prisma-schema
+// ============================================================
+//  Garment Supply Platform — Prisma schema (India-ready)
+//  Database: PostgreSQL
+//
+//  CONVENTIONS
+//  - Money is ALWAYS integer paise (₹250.00 -> 25000). Never floats.
+//  - GST-EXCLUSIVE pricing: pricePaise is the pre-tax price; tax is
+//    computed from gstRatePercent at checkout. (B2B norm.)
+//  - Tax split: same-state buyer -> CGST + SGST; other-state -> IGST.
+//    The customer's state + your seller state decide which applies.
+//  - Prices, HSN, GST rate, etc. are SNAPSHOTTED onto OrderItem at
+//    checkout so historical orders never change when a product does.
+//
+//  ASSUMPTIONS (flip any of these, say the word):
+//  - Schema is GST-capable now; invoice PDF generation is later.
+//  - Flat price + optional quantity tiers (PriceTier).
+//  - Razorpay + COD + Credit + Bank transfer, with amount-due tracking.
+// ============================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -10,31 +26,29 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
+//  Enums
+// ------------------------------------------------------------
 
-enum UserRole {
+enum Role {
   ADMIN
   AGENT
-  CUSTOMER
 }
 
-enum UserStatus {
-  PENDING // registered, awaiting approval/verification
-  ACTIVE
-  SUSPENDED
-}
-
-enum AddressType {
-  BILLING
-  SHIPPING
+// Unit of measure — garment supplies sell in more than just "pieces".
+enum ProductUnit {
+  PIECE
+  DOZEN
+  PACK
+  BOX
+  SET
+  KILOGRAM
+  METER
 }
 
 enum OrderStatus {
-  DRAFT
-  PLACED
-  CONFIRMED
+  PENDING // created, not yet confirmed/paid
+  CONFIRMED // payment received OR credit order accepted
   PACKED
   SHIPPED
   DELIVERED
@@ -42,304 +56,283 @@ enum OrderStatus {
   RETURNED
 }
 
-enum PaymentStatus {
-  PENDING
-  PAID
+// Whether the money for an order has come in (handles credit/partial).
+enum OrderPaymentStatus {
+  UNPAID
   PARTIALLY_PAID
-  FAILED
+  PAID
   REFUNDED
 }
 
 enum PaymentMethod {
-  CASH
-  BANK_TRANSFER
-  UPI
-  CARD
-  CREDIT // pay-later / store credit
+  RAZORPAY // UPI / cards / netbanking
+  COD // cash on delivery
+  CREDIT // pay-later terms
+  BANK_TRANSFER // NEFT / IMPS / RTGS
 }
 
-// ---------------------------------------------------------------------------
-// Identity & profiles
-// ---------------------------------------------------------------------------
+enum PaymentStatus {
+  CREATED // initiated, awaiting confirmation
+  PAID // verified
+  FAILED
+  REFUNDED
+}
 
+// ------------------------------------------------------------
+//  Identity
+// ------------------------------------------------------------
+
+// Internal team members (your staff). Distinct from Customer.
 model User {
-  id           String     @id @default(uuid())
-  email        String     @unique
-  phone        String?    @unique
-  passwordHash String
-  fullName     String
-  role         UserRole   @default(CUSTOMER)
-  status       UserStatus @default(PENDING)
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  phone     String?
+  password  String // bcrypt hash
+  role      Role     @default(AGENT)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
 
-  customerProfile CustomerProfile?
-  agentProfile    AgentProfile?
+// Shop owners — your customers. Phone is the primary identity in India.
+model Customer {
+  id        String   @id @default(uuid())
+  shopName  String
+  ownerName String?
+  // Store the 10-digit number; +91 country code handled in app/validation.
+  phone     String   @unique
+  email     String?
+  password  String? // bcrypt hash; null when using OTP-only login
+  gstin     String? // 15-char GSTIN; required only if they want GST invoices
 
-  refreshTokens RefreshToken[]
-  ordersPlaced  Order[]        @relation("OrderCreatedBy")
+  // Credit terms (used only when an order is placed on CREDIT)
+  creditLimitPaise Int     @default(0)
+  creditDays       Int     @default(0) // e.g. 15 / 30 day terms
+  isActive         Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  @@index([role])
-  @@index([status])
-  @@map("users")
-}
-
-model RefreshToken {
-  id        String   @id @default(uuid())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId    String
-  tokenHash String   @unique
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime @default(now())
-
-  @@index([userId])
-  @@map("refresh_tokens")
-}
-
-/// Business profile for a garment store / boutique owner.
-model CustomerProfile {
-  id           String  @id @default(uuid())
-  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId       String  @unique
-  businessName String
-  gstNumber    String?
-  businessType String? // e.g. "Boutique", "Garment Store", "Wholesaler"
-  creditLimit  Decimal @default(0) @db.Decimal(12, 2)
-
-  // The sales agent that manages this customer (optional).
-  agent   AgentProfile? @relation(fields: [agentId], references: [id], onDelete: SetNull)
-  agentId String?
 
   addresses Address[]
   cart      Cart?
   orders    Order[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([agentId])
-  @@map("customer_profiles")
+  @@index([phone])
 }
 
-/// Sales agent (field/inside rep) who services customers.
-model AgentProfile {
-  id           String  @id @default(uuid())
-  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId       String  @unique
-  employeeCode String  @unique
-  region       String?
-
-  customers CustomerProfile[]
-  orders    Order[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("agent_profiles")
-}
-
+// Indian address. state + pincode matter for tax and delivery.
 model Address {
-  id         String          @id @default(uuid())
-  customer   CustomerProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  id         String   @id @default(uuid())
   customerId String
-  type       AddressType     @default(SHIPPING)
-  line1      String
-  line2      String?
-  city       String
-  state      String
-  postalCode String
-  country    String          @default("India")
-  isDefault  Boolean         @default(false)
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  label     String? // "Shop", "Warehouse"
+  line1     String
+  line2     String?
+  city      String
+  state     String // Indian state name (decides CGST/SGST vs IGST)
+  stateCode String? // 2-digit GST state code (e.g. "27" = Maharashtra)
+  pincode   String // 6-digit PIN
+  isDefault Boolean  @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([customerId])
-  @@map("addresses")
 }
 
-// ---------------------------------------------------------------------------
-// Catalog
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
+//  Catalog
+// ------------------------------------------------------------
 
+// Self-referencing so categories can nest (e.g. Packaging > Boxes).
 model Category {
-  id          String  @id @default(uuid())
-  name        String
-  slug        String  @unique
-  description String?
-  imageUrl    String?
-  isActive    Boolean @default(true)
+  id        String     @id @default(uuid())
+  name      String
+  slug      String     @unique
+  imageUrl  String?
+  sortOrder Int        @default(0)
+  isActive  Boolean    @default(true)
+  parentId  String?
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
 
-  // Self-relation for sub-categories.
-  parent   Category?  @relation("CategoryToSubcategory", fields: [parentId], references: [id], onDelete: SetNull)
-  parentId String?
-  children Category[] @relation("CategoryToSubcategory")
-
-  products Product[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([parentId])
-  @@map("categories")
+  products  Product[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 }
 
 model Product {
-  id          String  @id @default(uuid())
+  id          String      @id @default(uuid())
   name        String
-  slug        String  @unique
+  slug        String?     @unique
   description String?
   brand       String?
-  imageUrls   String[] @default([])
-  isActive    Boolean @default(true)
+  categoryId  String
+  category    Category    @relation(fields: [categoryId], references: [id])
 
-  category   Category @relation(fields: [categoryId], references: [id])
-  categoryId String
+  unit           ProductUnit @default(PIECE)
+  hsnCode        String? // HSN code for GST invoicing
+  gstRatePercent Int         @default(0) // GST slab: 0 / 5 / 12 / 18 / 28
 
-  variants ProductVariant[]
+  mrpPaise   Int? // printed MRP, for display/discount reference
+  pricePaise Int // your base selling price, GST-EXCLUSIVE, in paise
+  moqQty     Int  @default(1) // minimum order quantity
+  stockQty   Int  @default(0)
 
+  imageUrl  String?
+  isActive  Boolean  @default(true) // hide without deleting
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([categoryId])
-  @@index([isActive])
-  @@map("products")
-}
-
-/// A purchasable variant (size/color) of a product, carrying price & stock.
-model ProductVariant {
-  id            String  @id @default(uuid())
-  product       Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  productId     String
-  sku           String  @unique
-  size          String?
-  color         String?
-  // Wholesale (per-unit) price.
-  price         Decimal @db.Decimal(12, 2)
-  mrp           Decimal? @db.Decimal(12, 2)
-  // Minimum order quantity for B2B.
-  minOrderQty   Int     @default(1)
-  stockQuantity Int     @default(0)
-  isActive      Boolean @default(true)
-
+  priceTiers PriceTier[]
   cartItems  CartItem[]
   orderItems OrderItem[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([productId])
-  @@map("product_variants")
+  @@index([categoryId])
 }
 
-// ---------------------------------------------------------------------------
-// Cart
-// ---------------------------------------------------------------------------
+// Quantity-break wholesale pricing. "Buy >= minQty -> pay pricePaise each."
+// A product with no tiers simply uses Product.pricePaise.
+model PriceTier {
+  id         String  @id @default(uuid())
+  productId  String
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  minQty     Int // tier applies at this quantity and above
+  pricePaise Int // per-unit price at this tier, GST-exclusive
+
+  @@unique([productId, minQty])
+  @@index([productId])
+}
+
+// ------------------------------------------------------------
+//  Cart  (one active cart per customer, lives server-side)
+// ------------------------------------------------------------
 
 model Cart {
-  id         String          @id @default(uuid())
-  customer   CustomerProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  customerId String          @unique
+  id         String     @id @default(uuid())
+  customerId String     @unique
+  customer   Customer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
   items      CartItem[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("carts")
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
 }
 
 model CartItem {
-  id        String         @id @default(uuid())
-  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  id        String   @id @default(uuid())
   cartId    String
-  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
-  variantId String
-  quantity  Int            @default(1)
-
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  quantity  Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([cartId, variantId])
+  // Price is NOT stored here — it's resolved (incl. tier) at checkout,
+  // so the cart always reflects current pricing.
+  @@unique([cartId, productId]) // one row per product per cart
   @@index([cartId])
-  @@map("cart_items")
 }
 
-// ---------------------------------------------------------------------------
-// Orders
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
+//  Orders & payments
+// ------------------------------------------------------------
 
 model Order {
   id          String      @id @default(uuid())
+  // Human-readable, e.g. "ORD-2026-00042". Generated at creation.
   orderNumber String      @unique
-  customer    CustomerProfile @relation(fields: [customerId], references: [id])
   customerId  String
+  customer    Customer    @relation(fields: [customerId], references: [id])
+  status      OrderStatus @default(PENDING)
 
-  // Agent who placed/owns the order (optional — customers can self-serve).
-  agent   AgentProfile? @relation(fields: [agentId], references: [id], onDelete: SetNull)
-  agentId String?
+  // ---- Shipping address SNAPSHOT (so later edits don't alter the order) ----
+  shipName    String
+  shipLine1   String
+  shipLine2   String?
+  shipCity    String
+  shipState   String
+  shipPincode String
+  shipPhone   String
 
-  // User account that created the order (customer or agent).
-  createdBy   User   @relation("OrderCreatedBy", fields: [createdById], references: [id])
-  createdById String
+  // ---- GST snapshot ----
+  gstinUsed     String? // customer's GSTIN at order time, if any
+  placeOfSupply String // state used to decide CGST/SGST vs IGST
 
-  status        OrderStatus   @default(PLACED)
-  paymentStatus PaymentStatus @default(PENDING)
+  // ---- Money (all integer paise) ----
+  subtotalPaise Int // sum of line subtotals, pre-tax
+  discountPaise Int @default(0)
+  deliveryPaise Int @default(0)
+  cgstPaise     Int @default(0)
+  sgstPaise     Int @default(0)
+  igstPaise     Int @default(0)
+  totalPaise    Int // grand total payable
 
-  subtotal Decimal @db.Decimal(12, 2)
-  taxTotal Decimal @default(0) @db.Decimal(12, 2)
-  discount Decimal @default(0) @db.Decimal(12, 2)
-  total    Decimal @db.Decimal(12, 2)
+  // ---- Payment state ----
+  paymentMethod   PaymentMethod
+  paymentStatus   OrderPaymentStatus @default(UNPAID)
+  amountPaidPaise Int                @default(0)
+  amountDuePaise  Int                @default(0) // for credit / partial
+  dueDate         DateTime? // for CREDIT orders
 
-  shippingAddress Json? // snapshot of the address at order time
-  notes           String?
-
-  items    OrderItem[]
-  payments Payment[]
+  // ---- Invoice (filled when a GST invoice is issued) ----
+  invoiceNumber String?   @unique
+  invoiceDate   DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  items    OrderItem[]
+  payments Payment[] // multiple allowed (partial / credit settlements)
+
   @@index([customerId])
-  @@index([agentId])
   @@index([status])
-  @@map("orders")
+  @@index([paymentStatus])
 }
 
 model OrderItem {
-  id        String         @id @default(uuid())
-  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id        String  @id @default(uuid())
   orderId   String
-  variant   ProductVariant @relation(fields: [variantId], references: [id])
-  variantId String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
 
-  // Snapshot fields so historical orders stay accurate if catalog changes.
-  productName String
-  sku         String
-  unitPrice   Decimal @db.Decimal(12, 2)
-  quantity    Int
-  lineTotal   Decimal @db.Decimal(12, 2)
+  // ---- Snapshots taken at checkout ----
+  productName    String
+  hsnCode        String?
+  unit           ProductUnit
+  quantity       Int
+  unitPricePaise Int // resolved price (incl. tier) at order time, pre-tax
+  gstRatePercent Int
 
-  createdAt DateTime @default(now())
+  // ---- Computed line amounts (integer paise) ----
+  lineSubtotalPaise Int // unitPricePaise * quantity
+  cgstPaise         Int @default(0)
+  sgstPaise         Int @default(0)
+  igstPaise         Int @default(0)
+  lineTotalPaise    Int // subtotal + taxes
 
   @@index([orderId])
-  @@map("order_items")
+  @@index([productId])
 }
 
 model Payment {
-  id        String        @id @default(uuid())
-  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  orderId   String
-  amount    Decimal       @db.Decimal(12, 2)
-  method    PaymentMethod
-  status    PaymentStatus @default(PENDING)
-  reference String?
-  paidAt    DateTime?
+  id          String        @id @default(uuid())
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method      PaymentMethod
+  amountPaise Int
+  status      PaymentStatus @default(CREATED)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Razorpay references (verify signature server-side before marking PAID)
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  razorpaySignature String?
+
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@index([orderId])
-  @@map("payments")
 }

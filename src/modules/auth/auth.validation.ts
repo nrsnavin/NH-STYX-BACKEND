@@ -1,20 +1,33 @@
 import { z } from 'zod';
 
-export const registerSchema = z.object({
+const phone = z
+  .string()
+  .regex(/^\d{10}$/, 'Phone must be a 10-digit number (without +91)');
+
+export const staffLoginSchema = z.object({
   body: z.object({
     email: z.string().email(),
-    password: z.string().min(8, 'Password must be at least 8 characters'),
-    fullName: z.string().min(2),
-    phone: z.string().min(6).optional(),
-    businessName: z.string().min(2),
-    gstNumber: z.string().optional(),
-    businessType: z.string().optional(),
+    password: z.string().min(1, 'Password is required'),
   }),
 });
 
-export const loginSchema = z.object({
+export const customerRegisterSchema = z.object({
   body: z.object({
-    email: z.string().email(),
+    shopName: z.string().min(2),
+    ownerName: z.string().min(2).optional(),
+    phone,
+    password: z.string().min(8, 'Password must be at least 8 characters'),
+    email: z.string().email().optional(),
+    gstin: z
+      .string()
+      .length(15, 'GSTIN must be 15 characters')
+      .optional(),
+  }),
+});
+
+export const customerLoginSchema = z.object({
+  body: z.object({
+    phone,
     password: z.string().min(1, 'Password is required'),
   }),
 });
@@ -24,6 +37,3 @@ export const refreshSchema = z.object({
     refreshToken: z.string().min(10),
   }),
 });
-
-export type RegisterInput = z.infer<typeof registerSchema>['body'];
-export type LoginInput = z.infer<typeof loginSchema>['body'];

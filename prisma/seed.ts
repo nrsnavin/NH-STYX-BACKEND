@@ -1,82 +1,79 @@
-import { PrismaClient, UserRole, UserStatus } from '@prisma/client';
+import { PrismaClient, ProductUnit, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
-
 const hash = (plain: string) => bcrypt.hash(plain, 10);
 
 async function main() {
   console.log('🌱 Seeding NH Styx database...');
 
-  // --- Admin ---
-  const admin = await prisma.user.upsert({
+  // --- Staff (User) ---
+  await prisma.user.upsert({
     where: { email: 'admin@nhstyx.com' },
     update: {},
     create: {
+      name: 'NH Styx Admin',
       email: 'admin@nhstyx.com',
-      passwordHash: await hash('Admin@123'),
-      fullName: 'NH Styx Admin',
-      role: UserRole.ADMIN,
-      status: UserStatus.ACTIVE,
+      phone: '9000000001',
+      password: await hash('Admin@123'),
+      role: Role.ADMIN,
     },
   });
-
-  // --- Agent ---
-  const agent = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { email: 'agent@nhstyx.com' },
     update: {},
     create: {
+      name: 'Field Agent One',
       email: 'agent@nhstyx.com',
-      passwordHash: await hash('Agent@123'),
-      fullName: 'Field Agent One',
-      role: UserRole.AGENT,
-      status: UserStatus.ACTIVE,
-      agentProfile: {
-        create: { employeeCode: 'AGT-0001', region: 'South' },
-      },
+      phone: '9000000002',
+      password: await hash('Agent@123'),
+      role: Role.AGENT,
     },
-    include: { agentProfile: true },
   });
 
-  // --- Customer (boutique owner) ---
-  await prisma.user.upsert({
-    where: { email: 'customer@nhstyx.com' },
+  // --- Customer (shop owner) with address, credit terms, and a cart ---
+  const customer = await prisma.customer.upsert({
+    where: { phone: '9876543210' },
     update: {},
     create: {
-      email: 'customer@nhstyx.com',
-      passwordHash: await hash('Customer@123'),
-      fullName: 'Boutique Owner',
-      role: UserRole.CUSTOMER,
-      status: UserStatus.ACTIVE,
-      customerProfile: {
+      shopName: 'Trendy Threads Boutique',
+      ownerName: 'Asha Verma',
+      phone: '9876543210',
+      email: 'asha@trendythreads.in',
+      gstin: '27ABCDE1234F1Z5',
+      password: await hash('Customer@123'),
+      creditLimitPaise: 5_00_000, // ₹5,000
+      creditDays: 30,
+      cart: { create: {} },
+      addresses: {
         create: {
-          businessName: 'Trendy Threads Boutique',
-          businessType: 'Boutique',
-          gstNumber: '29ABCDE1234F1Z5',
-          agentId: agent.agentProfile?.id,
-          cart: { create: {} },
+          label: 'Shop',
+          line1: '14, MG Road',
+          line2: 'Near Clock Tower',
+          city: 'Pune',
+          state: 'Maharashtra',
+          stateCode: '27',
+          pincode: '411001',
+          isDefault: true,
         },
       },
     },
   });
+  console.log(`   Customer ${customer.shopName} ready.`);
 
-  // --- Catalog: categories ---
+  // --- Categories ---
   const apparel = await prisma.category.upsert({
     where: { slug: 'apparel' },
     update: {},
-    create: { name: 'Apparel', slug: 'apparel', description: 'Clothing & garments' },
+    create: { name: 'Apparel', slug: 'apparel', sortOrder: 1 },
   });
   const supplies = await prisma.category.upsert({
     where: { slug: 'store-supplies' },
     update: {},
-    create: {
-      name: 'Store Supplies',
-      slug: 'store-supplies',
-      description: 'Hangers, tags, packaging & fixtures',
-    },
+    create: { name: 'Store Supplies', slug: 'store-supplies', sortOrder: 2 },
   });
 
-  // --- Catalog: products with variants ---
+  // --- Products (paise, GST-exclusive, with quantity tiers) ---
   await prisma.product.upsert({
     where: { slug: 'cotton-kurti-seed' },
     update: {},
@@ -86,11 +83,17 @@ async function main() {
       description: 'Breathable cotton kurti — wholesale pack.',
       brand: 'NH Basics',
       categoryId: apparel.id,
-      variants: {
+      unit: ProductUnit.PIECE,
+      hsnCode: '6109',
+      gstRatePercent: 5,
+      mrpPaise: 79900, // ₹799.00
+      pricePaise: 32000, // ₹320.00 base
+      moqQty: 6,
+      stockQty: 240,
+      priceTiers: {
         create: [
-          { sku: 'KURTI-RED-M', size: 'M', color: 'Red', price: 320, mrp: 799, minOrderQty: 6, stockQuantity: 240 },
-          { sku: 'KURTI-RED-L', size: 'L', color: 'Red', price: 320, mrp: 799, minOrderQty: 6, stockQuantity: 180 },
-          { sku: 'KURTI-BLU-M', size: 'M', color: 'Blue', price: 320, mrp: 799, minOrderQty: 6, stockQuantity: 200 },
+          { minQty: 12, pricePaise: 30000 }, // ₹300 each at 12+
+          { minQty: 50, pricePaise: 28000 }, // ₹280 each at 50+
         ],
       },
     },
@@ -105,18 +108,38 @@ async function main() {
       description: 'Premium wooden hangers for boutiques.',
       brand: 'NH Store',
       categoryId: supplies.id,
-      variants: {
-        create: [
-          { sku: 'HNG-WD-50', price: 450, mrp: 999, minOrderQty: 2, stockQuantity: 500 },
-        ],
-      },
+      unit: ProductUnit.PACK,
+      hsnCode: '4421',
+      gstRatePercent: 18,
+      mrpPaise: 99900,
+      pricePaise: 45000, // ₹450 / pack
+      moqQty: 2,
+      stockQty: 500,
+      priceTiers: { create: [{ minQty: 10, pricePaise: 42000 }] },
+    },
+  });
+
+  await prisma.product.upsert({
+    where: { slug: 'poly-packaging-seed' },
+    update: {},
+    create: {
+      name: 'Poly Packaging Covers (Box of 500)',
+      slug: 'poly-packaging-seed',
+      description: 'Transparent garment packaging covers.',
+      brand: 'NH Store',
+      categoryId: supplies.id,
+      unit: ProductUnit.BOX,
+      hsnCode: '3923',
+      gstRatePercent: 18,
+      pricePaise: 60000, // ₹600 / box
+      moqQty: 1,
+      stockQty: 300,
     },
   });
 
   console.log('✅ Seed complete.');
-  console.log('   Admin:    admin@nhstyx.com / Admin@123');
-  console.log('   Agent:    agent@nhstyx.com / Agent@123');
-  console.log('   Customer: customer@nhstyx.com / Customer@123');
+  console.log('   Staff   → admin@nhstyx.com / Admin@123   ·   agent@nhstyx.com / Agent@123');
+  console.log('   Customer→ phone 9876543210 / Customer@123');
 }
 
 main()

@@ -1,30 +1,46 @@
 import { NextFunction, Request, Response } from 'express';
-import { UserRole } from '@prisma/client';
+import { Role } from '@prisma/client';
 import { verifyAccessToken } from '../utils/jwt';
 import { ApiError } from '../utils/ApiError';
 
-/** Requires a valid Bearer access token; attaches the decoded user to req.user. */
+/** Requires a valid Bearer access token; attaches the decoded actor to req.auth. */
 export const authenticate = (req: Request, _res: Response, next: NextFunction): void => {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
     throw ApiError.unauthorized('Missing or malformed Authorization header');
   }
   const token = header.slice('Bearer '.length).trim();
-  req.user = verifyAccessToken(token);
+  req.auth = verifyAccessToken(token);
+  next();
+};
+
+/** Restricts a route to internal staff (User: ADMIN/AGENT). */
+export const requireStaff = (req: Request, _res: Response, next: NextFunction): void => {
+  if (!req.auth || req.auth.type !== 'STAFF') {
+    throw ApiError.forbidden('Staff access only');
+  }
+  next();
+};
+
+/** Restricts a route to shop-owner customers. */
+export const requireCustomer = (req: Request, _res: Response, next: NextFunction): void => {
+  if (!req.auth || req.auth.type !== 'CUSTOMER') {
+    throw ApiError.forbidden('Customer access only');
+  }
   next();
 };
 
 /**
- * Restricts a route to one or more roles. Use after `authenticate`.
- * Example: router.get('/admin', authenticate, authorize('ADMIN'), handler)
+ * Restricts a route to specific staff roles. Implies `requireStaff`.
+ * Example: router.post('/', authenticate, authorize('ADMIN'), handler)
  */
 export const authorize =
-  (...roles: UserRole[]) =>
+  (...roles: Role[]) =>
   (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.user) {
-      throw ApiError.unauthorized();
+    if (!req.auth || req.auth.type !== 'STAFF') {
+      throw ApiError.forbidden('Staff access only');
     }
-    if (!roles.includes(req.user.role as UserRole)) {
+    if (!req.auth.role || !roles.includes(req.auth.role)) {
       throw ApiError.forbidden('You do not have permission to access this resource');
     }
     next();
