@@ -61,80 +61,228 @@ async function main() {
   });
   console.log(`   Customer ${customer.shopName} ready.`);
 
-  // --- Categories ---
-  const apparel = await prisma.category.upsert({
-    where: { slug: 'apparel' },
-    update: {},
-    create: { name: 'Apparel', slug: 'apparel', sortOrder: 1 },
-  });
-  const supplies = await prisma.category.upsert({
-    where: { slug: 'store-supplies' },
-    update: {},
-    create: { name: 'Store Supplies', slug: 'store-supplies', sortOrder: 2 },
-  });
+  // --- Categories (Amazon-style tree: top-level + sub-categories) ---
+  const cat = (
+    name: string,
+    slug: string,
+    sortOrder: number,
+    parentId?: string,
+  ) =>
+    prisma.category.upsert({
+      where: { slug },
+      update: {},
+      create: { name, slug, sortOrder, parentId },
+    });
+
+  const apparel = await cat('Apparel', 'apparel', 1);
+  const kurtis = await cat('Kurtis & Tops', 'kurtis-tops', 1, apparel.id);
+  const sarees = await cat('Sarees', 'sarees', 2, apparel.id);
+  const menswear = await cat('Menswear', 'menswear', 3, apparel.id);
+
+  const packaging = await cat('Packaging', 'packaging', 2);
+  const covers = await cat('Covers & Bags', 'covers-bags', 1, packaging.id);
+
+  const hangers = await cat('Hangers & Display', 'hangers-display', 3);
+  const tags = await cat('Tags & Labels', 'tags-labels', 4);
+  const fixtures = await cat('Store Fixtures', 'store-fixtures', 5);
+  const trims = await cat('Trims & Accessories', 'trims-accessories', 6);
 
   // --- Products (paise, GST-exclusive, with quantity tiers) ---
-  await prisma.product.upsert({
-    where: { slug: 'cotton-kurti-seed' },
-    update: {},
-    create: {
-      name: "Women's Cotton Kurti",
-      slug: 'cotton-kurti-seed',
-      description: 'Breathable cotton kurti — wholesale pack.',
-      brand: 'NH Basics',
-      categoryId: apparel.id,
-      unit: ProductUnit.PIECE,
-      hsnCode: '6109',
-      gstRatePercent: 5,
-      mrpPaise: 79900, // ₹799.00
-      pricePaise: 32000, // ₹320.00 base
-      moqQty: 6,
-      stockQty: 240,
-      priceTiers: {
-        create: [
-          { minQty: 12, pricePaise: 30000 }, // ₹300 each at 12+
-          { minQty: 50, pricePaise: 28000 }, // ₹280 each at 50+
-        ],
+  interface Tier {
+    minQty: number;
+    pricePaise: number;
+  }
+  const product = (p: {
+    name: string;
+    slug: string;
+    description: string;
+    brand: string;
+    categoryId: string;
+    unit: ProductUnit;
+    hsnCode: string;
+    gstRatePercent: number;
+    mrpPaise?: number;
+    pricePaise: number;
+    moqQty: number;
+    stockQty: number;
+    tiers?: Tier[];
+  }) =>
+    prisma.product.upsert({
+      where: { slug: p.slug },
+      update: {},
+      create: {
+        name: p.name,
+        slug: p.slug,
+        description: p.description,
+        brand: p.brand,
+        categoryId: p.categoryId,
+        unit: p.unit,
+        hsnCode: p.hsnCode,
+        gstRatePercent: p.gstRatePercent,
+        mrpPaise: p.mrpPaise,
+        pricePaise: p.pricePaise,
+        moqQty: p.moqQty,
+        stockQty: p.stockQty,
+        priceTiers: p.tiers ? { create: p.tiers } : undefined,
       },
-    },
-  });
+    });
 
-  await prisma.product.upsert({
-    where: { slug: 'wooden-hanger-seed' },
-    update: {},
-    create: {
-      name: 'Wooden Display Hanger (Pack of 50)',
-      slug: 'wooden-hanger-seed',
-      description: 'Premium wooden hangers for boutiques.',
-      brand: 'NH Store',
-      categoryId: supplies.id,
-      unit: ProductUnit.PACK,
-      hsnCode: '4421',
-      gstRatePercent: 18,
-      mrpPaise: 99900,
-      pricePaise: 45000, // ₹450 / pack
-      moqQty: 2,
-      stockQty: 500,
-      priceTiers: { create: [{ minQty: 10, pricePaise: 42000 }] },
-    },
+  await product({
+    name: "Women's Cotton Kurti",
+    slug: 'cotton-kurti-seed',
+    description: 'Breathable cotton kurti — wholesale pack.',
+    brand: 'NH Basics',
+    categoryId: kurtis.id,
+    unit: ProductUnit.PIECE,
+    hsnCode: '6109',
+    gstRatePercent: 5,
+    mrpPaise: 79900,
+    pricePaise: 32000,
+    moqQty: 6,
+    stockQty: 240,
+    tiers: [
+      { minQty: 12, pricePaise: 30000 },
+      { minQty: 50, pricePaise: 28000 },
+    ],
   });
-
-  await prisma.product.upsert({
-    where: { slug: 'poly-packaging-seed' },
-    update: {},
-    create: {
-      name: 'Poly Packaging Covers (Box of 500)',
-      slug: 'poly-packaging-seed',
-      description: 'Transparent garment packaging covers.',
-      brand: 'NH Store',
-      categoryId: supplies.id,
-      unit: ProductUnit.BOX,
-      hsnCode: '3923',
-      gstRatePercent: 18,
-      pricePaise: 60000, // ₹600 / box
-      moqQty: 1,
-      stockQty: 300,
-    },
+  await product({
+    name: "Women's Rayon Printed Top",
+    slug: 'rayon-top-seed',
+    description: 'Trendy rayon tops, mixed prints.',
+    brand: 'NH Basics',
+    categoryId: kurtis.id,
+    unit: ProductUnit.PIECE,
+    hsnCode: '6106',
+    gstRatePercent: 5,
+    mrpPaise: 59900,
+    pricePaise: 24000,
+    moqQty: 10,
+    stockQty: 320,
+    tiers: [{ minQty: 50, pricePaise: 21000 }],
+  });
+  await product({
+    name: 'Banarasi Silk Saree with Blouse',
+    slug: 'silk-saree-seed',
+    description: 'Festive Banarasi silk sarees with blouse piece.',
+    brand: 'NH Ethnics',
+    categoryId: sarees.id,
+    unit: ProductUnit.PIECE,
+    hsnCode: '5007',
+    gstRatePercent: 5,
+    mrpPaise: 249900,
+    pricePaise: 120000,
+    moqQty: 4,
+    stockQty: 80,
+    tiers: [{ minQty: 12, pricePaise: 110000 }],
+  });
+  await product({
+    name: "Men's Formal Shirt (Pack of 5)",
+    slug: 'mens-shirt-seed',
+    description: 'Wrinkle-free formal shirts, assorted sizes.',
+    brand: 'NH Formals',
+    categoryId: menswear.id,
+    unit: ProductUnit.PACK,
+    hsnCode: '6205',
+    gstRatePercent: 5,
+    mrpPaise: 159900,
+    pricePaise: 95000,
+    moqQty: 2,
+    stockQty: 150,
+  });
+  await product({
+    name: 'Wooden Display Hanger (Pack of 50)',
+    slug: 'wooden-hanger-seed',
+    description: 'Premium wooden hangers for boutiques.',
+    brand: 'NH Store',
+    categoryId: hangers.id,
+    unit: ProductUnit.PACK,
+    hsnCode: '4421',
+    gstRatePercent: 18,
+    mrpPaise: 99900,
+    pricePaise: 45000,
+    moqQty: 2,
+    stockQty: 500,
+    tiers: [{ minQty: 10, pricePaise: 42000 }],
+  });
+  await product({
+    name: 'Velvet Hangers (Pack of 100)',
+    slug: 'velvet-hanger-seed',
+    description: 'Non-slip velvet hangers, space-saving.',
+    brand: 'NH Store',
+    categoryId: hangers.id,
+    unit: ProductUnit.PACK,
+    hsnCode: '3926',
+    gstRatePercent: 18,
+    pricePaise: 78000,
+    moqQty: 1,
+    stockQty: 220,
+  });
+  await product({
+    name: 'Poly Packaging Covers (Box of 500)',
+    slug: 'poly-packaging-seed',
+    description: 'Transparent garment packaging covers.',
+    brand: 'NH Store',
+    categoryId: covers.id,
+    unit: ProductUnit.BOX,
+    hsnCode: '3923',
+    gstRatePercent: 18,
+    pricePaise: 60000,
+    moqQty: 1,
+    stockQty: 300,
+  });
+  await product({
+    name: 'Kraft Paper Carry Bags (Pack of 100)',
+    slug: 'kraft-bags-seed',
+    description: 'Eco-friendly branded carry bags.',
+    brand: 'NH Store',
+    categoryId: covers.id,
+    unit: ProductUnit.PACK,
+    hsnCode: '4819',
+    gstRatePercent: 18,
+    pricePaise: 35000,
+    moqQty: 5,
+    stockQty: 400,
+    tiers: [{ minQty: 20, pricePaise: 32000 }],
+  });
+  await product({
+    name: 'Printed Garment Tags (Pack of 1000)',
+    slug: 'garment-tags-seed',
+    description: 'Custom-printable hang tags with string.',
+    brand: 'NH Store',
+    categoryId: tags.id,
+    unit: ProductUnit.PACK,
+    hsnCode: '4821',
+    gstRatePercent: 18,
+    pricePaise: 28000,
+    moqQty: 2,
+    stockQty: 600,
+  });
+  await product({
+    name: 'Female Retail Mannequin',
+    slug: 'mannequin-seed',
+    description: 'Full-body fibre mannequin for window display.',
+    brand: 'NH Fixtures',
+    categoryId: fixtures.id,
+    unit: ProductUnit.PIECE,
+    hsnCode: '9618',
+    gstRatePercent: 18,
+    mrpPaise: 499900,
+    pricePaise: 320000,
+    moqQty: 1,
+    stockQty: 40,
+  });
+  await product({
+    name: 'Assorted Buttons (Box of 2000)',
+    slug: 'buttons-seed',
+    description: 'Mixed designer buttons for tailoring.',
+    brand: 'NH Trims',
+    categoryId: trims.id,
+    unit: ProductUnit.BOX,
+    hsnCode: '9606',
+    gstRatePercent: 12,
+    pricePaise: 45000,
+    moqQty: 1,
+    stockQty: 130,
   });
 
   console.log('✅ Seed complete.');

@@ -38,6 +38,10 @@ const envSchema = z.object({
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
 
+  // Anthropic (optional — AI search falls back to keyword search when unset).
+  ANTHROPIC_API_KEY: z.string().optional(),
+  AI_SEARCH_MODEL: z.string().default('claude-opus-4-8'),
+
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),

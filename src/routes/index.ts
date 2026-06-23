@@ -7,6 +7,7 @@ import cartRoutes from '../modules/cart/cart.routes';
 import addressRoutes from '../modules/addresses/address.routes';
 import orderRoutes from '../modules/orders/order.routes';
 import customerRoutes from '../modules/customers/customer.routes';
+import searchRoutes from '../modules/search/search.routes';
 
 const router = Router();
 
@@ -34,5 +35,6 @@ router.use('/cart', cartRoutes);
 router.use('/addresses', addressRoutes);
 router.use('/orders', orderRoutes);
 router.use('/customers', customerRoutes);
+router.use('/search', searchRoutes);
 
 export default router;
