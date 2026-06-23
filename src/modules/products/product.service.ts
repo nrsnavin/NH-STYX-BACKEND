@@ -14,10 +14,20 @@ interface ListParams {
 export async function listProducts(params: ListParams) {
   const { page, limit, search, categoryId, isActive } = params;
   const where: Prisma.ProductWhereInput = {
-    ...(categoryId ? { categoryId } : {}),
     ...(isActive !== undefined ? { isActive } : {}),
     ...(search ? { name: { contains: search, mode: Prisma.QueryMode.insensitive } } : {}),
   };
+
+  // Category filter is tree-aware: a parent category includes its children.
+  if (categoryId) {
+    const category = await prisma.category.findUnique({
+      where: { id: categoryId },
+      include: { children: { select: { id: true } } },
+    });
+    where.categoryId = category
+      ? { in: [category.id, ...category.children.map((c) => c.id)] }
+      : categoryId;
+  }
 
   const [items, total] = await Promise.all([
     prisma.product.findMany({
