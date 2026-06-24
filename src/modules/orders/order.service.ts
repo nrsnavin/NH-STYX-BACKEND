@@ -9,6 +9,7 @@ import {
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { env } from '../../config/env';
+import { logger } from '../../config/logger';
 import { computeLineTax, isIntraState, resolveUnitPrice } from '../../utils/pricing';
 import { getStaffStoreId } from '../../utils/storeContext';
 
@@ -68,24 +69,37 @@ async function createRazorpayOrder(input: {
   }
 
   const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString('base64');
-  const response = await fetch('https://api.razorpay.com/v1/orders', {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      amount: input.amountPaise,
-      currency: RAZORPAY_CURRENCY,
-      receipt: input.receipt,
-      notes: input.notes,
-    }),
-  });
+
+  // Hard timeout so a slow/unreachable gateway can't hang the checkout request.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let response: Response;
+  try {
+    response = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount: input.amountPaise,
+        currency: RAZORPAY_CURRENCY,
+        receipt: input.receipt,
+        notes: input.notes,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Razorpay order request failed (timeout/network)');
+    throw ApiError.badRequest(
+      'Could not reach the payment gateway. Please try again, or choose Credit / Bank transfer.',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 
   const data = (await response.json().catch(() => null)) as
     | (Partial<RazorpayOrderResponse> & { error?: { description?: string } })
     | null;
   if (!response.ok || !data?.id) {
+    logger.error({ status: response.status, body: data }, 'Razorpay rejected order creation');
     throw ApiError.badRequest(data?.error?.description ?? 'Unable to create Razorpay order');
   }
 
@@ -213,109 +227,115 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
     throw ApiError.badRequest('Enter your bank transfer reference to place the order');
   }
 
-  // CREDIT is confirmed immediately (pay later); RAZORPAY awaits payment and
-  // BANK_TRANSFER awaits staff verification of the transfer.
-  const initialStatus =
-    input.paymentMethod === PaymentMethod.CREDIT ? OrderStatus.CONFIRMED : OrderStatus.PENDING;
+  // Every order starts PENDING and is only processed after verification:
+  // RAZORPAY auto-confirms when payment is verified; CREDIT and BANK_TRANSFER
+  // are confirmed by staff after they verify the order / transfer.
+  const initialStatus = OrderStatus.PENDING;
   const dueDate =
     input.paymentMethod === PaymentMethod.CREDIT && customer.creditDays > 0
       ? new Date(Date.now() + customer.creditDays * 24 * 60 * 60 * 1000)
       : null;
 
   const receipt = `nhstyx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-  const razorpayOrder =
-    input.paymentMethod === PaymentMethod.RAZORPAY
-      ? await createRazorpayOrder({
-          amountPaise: totalPaise,
-          receipt,
-          notes: {
-            customerId,
-            shopName: customer.shopName,
-            storeId: store.id,
+
+  // Persist the order FIRST, then make the slow external Razorpay call. Doing
+  // the gateway request before the transaction left a multi-second gap during
+  // which a serverless DB (e.g. Neon) could reap the pooled connection, so the
+  // transaction then failed and rolled back. Committing first — on a warm
+  // connection, with generous timeouts — removes that race entirely.
+  const order = await prisma.$transaction(
+    async (tx) => {
+      const orderNumber = await nextOrderNumber(tx);
+
+      const order = await tx.order.create({
+        data: {
+          orderNumber,
+          customerId,
+          storeId: store.id,
+          status: initialStatus,
+          shipName: address.label ? `${customer.shopName} (${address.label})` : customer.shopName,
+          shipLine1: address.line1,
+          shipLine2: address.line2,
+          shipCity: address.city,
+          shipState: address.state,
+          shipPincode: address.pincode,
+          shipPhone: customer.phone,
+          gstinUsed: customer.gstin,
+          placeOfSupply: address.state,
+          sellerStateCode: store.stateCode,
+          subtotalPaise,
+          discountPaise,
+          deliveryPaise,
+          cgstPaise: cgstTotal,
+          sgstPaise: sgstTotal,
+          igstPaise: igstTotal,
+          totalPaise,
+          paymentMethod: input.paymentMethod,
+          paymentStatus: OrderPaymentStatus.UNPAID,
+          amountPaidPaise: 0,
+          amountDuePaise: totalPaise,
+          dueDate,
+          items: { create: orderItems },
+        },
+        include: { items: true },
+      });
+
+      // Decrement per-store stock.
+      for (const item of cart.items) {
+        await tx.storeProduct.update({
+          where: { storeId_productId: { storeId: store.id, productId: item.productId } },
+          data: { stockQty: { decrement: item.quantity } },
+        });
+      }
+
+      // Empty the cart.
+      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+
+      // Open a payment intent. The Razorpay order id is attached AFTER commit.
+      if (input.paymentMethod === PaymentMethod.RAZORPAY) {
+        await tx.payment.create({
+          data: {
+            orderId: order.id,
+            method: PaymentMethod.RAZORPAY,
+            amountPaise: totalPaise,
+            status: PaymentStatus.CREATED,
           },
-        })
-      : null;
+        });
+      }
 
-  const order = await prisma.$transaction(async (tx) => {
-    const orderNumber = await nextOrderNumber(tx);
+      // For a bank transfer, record the customer's reference; staff verify it
+      // and mark it paid later (order stays UNPAID until then).
+      if (input.paymentMethod === PaymentMethod.BANK_TRANSFER) {
+        await tx.payment.create({
+          data: {
+            orderId: order.id,
+            method: PaymentMethod.BANK_TRANSFER,
+            amountPaise: totalPaise,
+            status: PaymentStatus.CREATED,
+            reference: input.bankReference?.trim(),
+            note: input.notes?.trim(),
+          },
+        });
+      }
 
-    const order = await tx.order.create({
-      data: {
-        orderNumber,
-        customerId,
-        storeId: store.id,
-        status: initialStatus,
-        shipName: address.label ? `${customer.shopName} (${address.label})` : customer.shopName,
-        shipLine1: address.line1,
-        shipLine2: address.line2,
-        shipCity: address.city,
-        shipState: address.state,
-        shipPincode: address.pincode,
-        shipPhone: customer.phone,
-        gstinUsed: customer.gstin,
-        placeOfSupply: address.state,
-        sellerStateCode: store.stateCode,
-        subtotalPaise,
-        discountPaise,
-        deliveryPaise,
-        cgstPaise: cgstTotal,
-        sgstPaise: sgstTotal,
-        igstPaise: igstTotal,
-        totalPaise,
-        paymentMethod: input.paymentMethod,
-        paymentStatus: OrderPaymentStatus.UNPAID,
-        amountPaidPaise: 0,
-        amountDuePaise: totalPaise,
-        dueDate,
-        items: { create: orderItems },
-      },
-      include: { items: true },
-    });
+      return order;
+    },
+    { maxWait: 15000, timeout: 30000 },
+  );
 
-    // Decrement per-store stock.
-    for (const item of cart.items) {
-      await tx.storeProduct.update({
-        where: { storeId_productId: { storeId: store.id, productId: item.productId } },
-        data: { stockQty: { decrement: item.quantity } },
-      });
-    }
+  if (input.paymentMethod !== PaymentMethod.RAZORPAY) return order;
 
-    // Empty the cart.
-    await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
-
-    // For online payment, open a payment intent (Razorpay order is stubbed
-    // when keys are absent).
-    if (input.paymentMethod === PaymentMethod.RAZORPAY) {
-      await tx.payment.create({
-        data: {
-          orderId: order.id,
-          method: PaymentMethod.RAZORPAY,
-          amountPaise: totalPaise,
-          status: PaymentStatus.CREATED,
-          razorpayOrderId: razorpayOrder?.id,
-        },
-      });
-    }
-
-    // For a bank transfer, record the customer's reference; staff verify it
-    // and mark it paid later (order stays UNPAID until then).
-    if (input.paymentMethod === PaymentMethod.BANK_TRANSFER) {
-      await tx.payment.create({
-        data: {
-          orderId: order.id,
-          method: PaymentMethod.BANK_TRANSFER,
-          amountPaise: totalPaise,
-          status: PaymentStatus.CREATED,
-          reference: input.bankReference?.trim(),
-          note: input.notes?.trim(),
-        },
-      });
-    }
-
-    return order;
+  // Order is safely committed — now create the gateway order (slow, external)
+  // and attach its id to the payment intent.
+  const razorpayOrder = await createRazorpayOrder({
+    amountPaise: totalPaise,
+    receipt,
+    notes: { customerId, shopName: customer.shopName, storeId: store.id },
   });
-
-  if (!razorpayOrder) return order;
+  await prisma.payment.updateMany({
+    where: { orderId: order.id, method: PaymentMethod.RAZORPAY, status: PaymentStatus.CREATED },
+    data: { razorpayOrderId: razorpayOrder.id },
+  });
 
   return {
     order,

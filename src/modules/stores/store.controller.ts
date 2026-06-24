@@ -22,6 +22,12 @@ export const list = asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true, items: data });
 });
 
+/** Public: serviceable cities for the registration dropdown. */
+export const cities = asyncHandler(async (_req: Request, res: Response) => {
+  const data = await storeService.listServiceCities();
+  res.json({ success: true, items: data });
+});
+
 export const getOne = asyncHandler(async (req: Request, res: Response) => {
   await assertStoreScope(req, req.params.id);
   const data = await storeService.getStore(req.params.id);

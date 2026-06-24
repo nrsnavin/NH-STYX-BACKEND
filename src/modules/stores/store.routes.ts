@@ -18,6 +18,9 @@ import * as storeController from './store.controller';
 
 const router = Router();
 
+// Public — serviceable cities for the registration screen (no auth).
+router.get('/cities', storeController.cities);
+
 // Agents may read (their own store) and manage their inventory; everything
 // structural (store CRUD, areas, agent assignment) is admin-only.
 

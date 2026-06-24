@@ -25,6 +25,19 @@ export async function getStore(id: string) {
   return store;
 }
 
+/**
+ * Public list of serviceable cities + the store that serves each. Powers the
+ * city dropdown on the (pre-auth) registration screen.
+ */
+export async function listServiceCities() {
+  const areas = await prisma.serviceArea.findMany({
+    where: { store: { isActive: true } },
+    include: { store: { select: { name: true, city: true } } },
+    orderBy: { label: 'asc' },
+  });
+  return areas.map((a) => ({ city: a.label, storeName: a.store.name, storeCity: a.store.city }));
+}
+
 interface StoreInput {
   name: string;
   code: string;
