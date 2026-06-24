@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { authenticate, authorize } from '../../middlewares/auth.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import {
@@ -17,6 +18,7 @@ import {
 import * as storeController from './store.controller';
 
 const router = Router();
+const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 } });
 
 // Public — serviceable cities for the registration screen (no auth).
 router.get('/cities', storeController.cities);
@@ -38,6 +40,14 @@ router.delete('/areas/:areaId', authenticate, authorize('ADMIN'), validate(areaI
 
 // Inventory (per-store price + stock) — admin or the store's own agent
 router.get('/:id/inventory', authenticate, authorize('ADMIN', 'AGENT'), validate(listInventorySchema), storeController.inventory);
+router.post(
+  '/:id/inventory/import',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(storeIdSchema),
+  csvUpload.single('file'),
+  storeController.importInventory,
+);
 router.put(
   '/:id/inventory/:productId',
   authenticate,

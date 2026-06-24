@@ -215,6 +215,60 @@ export async function upsertStoreProduct(
   });
 }
 
+/**
+ * Bulk-imports a store's price + stock from a CSV. Columns: slug (or name),
+ * price (in rupees), stock. Matches catalog products and upserts StoreProducts.
+ */
+export async function importInventory(storeId: string, csv: string) {
+  const lines = csv.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) throw ApiError.badRequest('CSV has no data rows');
+
+  const header = lines[0].split(',').map((h) => h.trim().toLowerCase());
+  const col = {
+    slug: header.indexOf('slug'),
+    name: header.indexOf('name'),
+    price: header.indexOf('price'),
+    stock: header.indexOf('stock'),
+  };
+  if (col.price < 0 || col.stock < 0 || (col.slug < 0 && col.name < 0)) {
+    throw ApiError.badRequest('CSV needs columns: slug (or name), price, stock');
+  }
+
+  const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+    const slug = col.slug >= 0 ? cells[col.slug] : undefined;
+    const name = col.name >= 0 ? cells[col.name] : undefined;
+    const price = Number(cells[col.price]);
+    const stock = Number(cells[col.stock]);
+    if (Number.isNaN(price) || Number.isNaN(stock)) {
+      result.errors.push(`Row ${i + 1}: invalid price/stock`);
+      continue;
+    }
+    const product = slug
+      ? await prisma.product.findUnique({ where: { slug } })
+      : await prisma.product.findFirst({
+          where: { name: { equals: name, mode: Prisma.QueryMode.insensitive } },
+        });
+    if (!product) {
+      result.skipped++;
+      result.errors.push(`Row ${i + 1}: product not found (${slug ?? name})`);
+      continue;
+    }
+    const existing = await prisma.storeProduct.findUnique({
+      where: { storeId_productId: { storeId, productId: product.id } },
+    });
+    await prisma.storeProduct.upsert({
+      where: { storeId_productId: { storeId, productId: product.id } },
+      create: { storeId, productId: product.id, pricePaise: Math.round(price * 100), stockQty: Math.round(stock) },
+      update: { pricePaise: Math.round(price * 100), stockQty: Math.round(stock) },
+    });
+    if (existing) result.updated++;
+    else result.created++;
+  }
+  return result;
+}
+
 export async function removeStoreProduct(storeId: string, productId: string) {
   await prisma.storeProduct
     .delete({ where: { storeId_productId: { storeId, productId } } })

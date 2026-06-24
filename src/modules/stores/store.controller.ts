@@ -82,6 +82,13 @@ export const removeProduct = asyncHandler(async (req: Request, res: Response) =>
   res.json({ success: true, message: 'Product removed from store' });
 });
 
+export const importInventory = asyncHandler(async (req: Request, res: Response) => {
+  await assertStoreScope(req, req.params.id);
+  if (!req.file) throw ApiError.badRequest('Upload a CSV file (field "file")');
+  const data = await storeService.importInventory(req.params.id, req.file.buffer.toString('utf-8'));
+  res.json({ success: true, data });
+});
+
 // ---- Agents (admin only) ----
 
 export const agents = asyncHandler(async (_req: Request, res: Response) => {
