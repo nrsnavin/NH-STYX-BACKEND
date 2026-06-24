@@ -39,4 +39,5 @@ coverage/
 *.tsbuildinfo
 .cache/
 tmp/
-uploads/
+# Runtime upload destination only (repo root) — not the src/modules/uploads code
+/uploads/
