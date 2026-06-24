@@ -3,6 +3,7 @@ import { ApiError } from '../../utils/ApiError';
 import { hashPassword, verifyPassword } from '../../utils/password';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../utils/jwt';
 import { findStoreForCity } from '../../utils/storeContext';
+import { createSignupLead } from '../crm/lead.service';
 
 // Store summary shown to a shop owner ("Shipped from …, <city>").
 const storeSelect = { select: { id: true, name: true, city: true, code: true } } as const;
@@ -73,6 +74,16 @@ export async function customerRegister(input: {
       status: true,
       store: storeSelect,
     },
+  });
+
+  // Surface the sign-up in the CRM pipeline for the serving store's agent.
+  await createSignupLead({
+    customerId: customer.id,
+    shopName: customer.shopName,
+    phone: customer.phone,
+    contactName: input.ownerName,
+    city: input.city,
+    storeId,
   });
 
   // No tokens are issued — the shop cannot sign in until it is approved.

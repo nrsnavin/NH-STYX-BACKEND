@@ -10,6 +10,7 @@ import customerRoutes from '../modules/customers/customer.routes';
 import searchRoutes from '../modules/search/search.routes';
 import storeRoutes from '../modules/stores/store.routes';
 import uploadRoutes from '../modules/uploads/upload.routes';
+import crmRoutes from '../modules/crm/lead.routes';
 
 const router = Router();
 
@@ -40,5 +41,6 @@ router.use('/customers', customerRoutes);
 router.use('/search', searchRoutes);
 router.use('/stores', storeRoutes);
 router.use('/uploads', uploadRoutes);
+router.use('/crm', crmRoutes);
 
 export default router;

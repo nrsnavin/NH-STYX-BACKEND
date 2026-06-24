@@ -113,7 +113,7 @@ async function main() {
   console.log(`   Customer ${customer.shopName} ready (store: Pune).`);
 
   // A PENDING shop so the agent's approval queue isn't empty.
-  await prisma.customer.upsert({
+  const pendingShop = await prisma.customer.upsert({
     where: { phone: '9812345678' },
     update: {},
     create: {
@@ -126,6 +126,30 @@ async function main() {
       cart: { create: {} },
     },
   });
+
+  // --- CRM: a sign-up lead for the pending shop + a couple of prospects ---
+  await prisma.lead.upsert({
+    where: { customerId: pendingShop.id },
+    update: {},
+    create: {
+      shopName: pendingShop.shopName,
+      contactName: pendingShop.ownerName,
+      phone: pendingShop.phone,
+      city: 'Pune',
+      source: 'SIGNUP',
+      stage: 'NEW',
+      storeId: pune.id,
+      customerId: pendingShop.id,
+    },
+  });
+  if ((await prisma.lead.count({ where: { source: 'MANUAL' } })) === 0) {
+    await prisma.lead.createMany({
+      data: [
+        { shopName: 'Riya Collections', contactName: 'Riya Shah', phone: '9760001111', city: 'Pune', stage: 'CONTACTED', source: 'MANUAL', storeId: pune.id, estValuePaise: 1_50_000 },
+        { shopName: 'Style Junction', contactName: 'Imran K', phone: '9760002222', city: 'Mumbai', stage: 'QUALIFIED', source: 'MANUAL', storeId: mumbai.id, estValuePaise: 5_00_000 },
+      ],
+    });
+  }
 
   // --- Categories (Amazon-style tree: top-level + sub-categories) ---
   const cat = (name: string, slug: string, sortOrder: number, parentId?: string) =>

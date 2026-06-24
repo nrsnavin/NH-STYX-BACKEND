@@ -43,6 +43,29 @@ enum CustomerStatus {
   REJECTED
 }
 
+// CRM lead pipeline.
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  WON
+  LOST
+}
+
+// Where a lead came from: a manually-entered prospect or a shop sign-up.
+enum LeadSource {
+  MANUAL
+  SIGNUP
+}
+
+// Logged interaction on a lead or customer.
+enum ActivityType {
+  NOTE
+  CALL
+  VISIT
+  EMAIL
+}
+
 // Unit of measure — garment supplies sell in more than just "pieces".
 enum ProductUnit {
   PIECE
@@ -105,6 +128,9 @@ model User {
   storeId String?
   store   Store?  @relation(fields: [storeId], references: [id])
 
+  assignedLeads      Lead[]     @relation("LeadAssignee")
+  authoredActivities Activity[] @relation("ActivityAuthor")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -144,9 +170,11 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  addresses Address[]
-  cart      Cart?
-  orders    Order[]
+  addresses  Address[]
+  cart       Cart?
+  orders     Order[]
+  lead       Lead?
+  activities Activity[]
 
   @@index([phone])
   @@index([storeId])
@@ -179,6 +207,7 @@ model Store {
   customers    Customer[]
   inventory    StoreProduct[]
   orders       Order[]
+  leads        Lead[]
 
   @@index([stateCode])
 }
@@ -444,4 +473,64 @@ model Payment {
   updatedAt DateTime  @updatedAt
 
   @@index([orderId])
+}
+
+// ------------------------------------------------------------
+//  CRM — leads & activities
+// ------------------------------------------------------------
+
+// A sales lead: a manually-entered prospect OR a shop sign-up, worked through
+// the pipeline by the serving store's agent.
+model Lead {
+  id             String     @id @default(uuid())
+  shopName       String
+  contactName    String?
+  phone          String
+  email          String?
+  city           String?
+  stage          LeadStage  @default(NEW)
+  source         LeadSource @default(MANUAL)
+  estValuePaise  Int        @default(0)
+  nextFollowUpAt DateTime?
+  lostReason     String?
+
+  // Scoping + ownership
+  storeId      String?
+  store        Store?  @relation(fields: [storeId], references: [id])
+  assignedToId String?
+  assignedTo   User?   @relation("LeadAssignee", fields: [assignedToId], references: [id])
+
+  // Linked shop account (set for SIGNUP leads, or once a prospect converts).
+  customerId String?   @unique
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  activities Activity[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([storeId])
+  @@index([stage])
+  @@index([assignedToId])
+}
+
+// A logged interaction (note/call/visit/email) on a lead or a customer.
+model Activity {
+  id         String       @id @default(uuid())
+  type       ActivityType @default(NOTE)
+  body       String
+  followUpAt DateTime?
+
+  leadId     String?
+  lead       Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  createdById String?
+  createdBy   User?   @relation("ActivityAuthor", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([leadId])
+  @@index([customerId])
+  @@index([createdById])
 }
