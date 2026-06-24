@@ -12,10 +12,90 @@ import { env } from '../../config/env';
 import { computeLineTax, isIntraState, resolveUnitPrice } from '../../utils/pricing';
 import { getStaffStoreId } from '../../utils/storeContext';
 
+const RAZORPAY_CURRENCY = 'INR';
+
+interface RazorpayOrderResponse {
+  id: string;
+  amount: number;
+  currency: string;
+  receipt: string;
+  status: string;
+}
+
+interface RazorpayCheckout {
+  enabled: boolean;
+  keyId: string | null;
+  orderId: string;
+  amountPaise: number;
+  currency: string;
+  name: string;
+  description: string;
+  prefill: {
+    name: string;
+    contact: string;
+    email?: string | null;
+  };
+  notes: Record<string, string>;
+}
+
 async function nextOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
   const year = new Date().getFullYear();
   const count = await tx.order.count();
   return `ORD-${year}-${String(count + 1).padStart(5, '0')}`;
+}
+
+function razorpayConfigured(): boolean {
+  return Boolean(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
+}
+
+function assertRazorpayConfigComplete(): void {
+  const hasKey = Boolean(env.RAZORPAY_KEY_ID);
+  const hasSecret = Boolean(env.RAZORPAY_KEY_SECRET);
+  if (hasKey !== hasSecret) {
+    throw ApiError.internal('Razorpay is partially configured. Set both key id and key secret.');
+  }
+}
+
+async function createRazorpayOrder(input: {
+  amountPaise: number;
+  receipt: string;
+  notes: Record<string, string>;
+}): Promise<RazorpayOrderResponse> {
+  assertRazorpayConfigComplete();
+
+  if (!razorpayConfigured()) {
+    throw ApiError.badRequest('Razorpay is not configured yet. Please choose another payment method.');
+  }
+
+  const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString('base64');
+  const response = await fetch('https://api.razorpay.com/v1/orders', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      amount: input.amountPaise,
+      currency: RAZORPAY_CURRENCY,
+      receipt: input.receipt,
+      notes: input.notes,
+    }),
+  });
+
+  const data = (await response.json().catch(() => null)) as
+    | (Partial<RazorpayOrderResponse> & { error?: { description?: string } })
+    | null;
+  if (!response.ok || !data?.id) {
+    throw ApiError.badRequest(data?.error?.description ?? 'Unable to create Razorpay order');
+  }
+
+  return {
+    id: data.id,
+    amount: data.amount ?? input.amountPaise,
+    currency: data.currency ?? RAZORPAY_CURRENCY,
+    receipt: data.receipt ?? input.receipt,
+    status: data.status ?? 'created',
+  };
 }
 
 interface CreateOrderInput {
@@ -142,7 +222,21 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       ? new Date(Date.now() + customer.creditDays * 24 * 60 * 60 * 1000)
       : null;
 
-  return prisma.$transaction(async (tx) => {
+  const receipt = `nhstyx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const razorpayOrder =
+    input.paymentMethod === PaymentMethod.RAZORPAY
+      ? await createRazorpayOrder({
+          amountPaise: totalPaise,
+          receipt,
+          notes: {
+            customerId,
+            shopName: customer.shopName,
+            storeId: store.id,
+          },
+        })
+      : null;
+
+  const order = await prisma.$transaction(async (tx) => {
     const orderNumber = await nextOrderNumber(tx);
 
     const order = await tx.order.create({
@@ -198,9 +292,7 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
           method: PaymentMethod.RAZORPAY,
           amountPaise: totalPaise,
           status: PaymentStatus.CREATED,
-          razorpayOrderId: env.RAZORPAY_KEY_ID
-            ? undefined // a real Razorpay order id would be created via their API
-            : `stub_${crypto.randomBytes(8).toString('hex')}`,
+          razorpayOrderId: razorpayOrder?.id,
         },
       });
     }
@@ -222,6 +314,31 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
 
     return order;
   });
+
+  if (!razorpayOrder) return order;
+
+  return {
+    order,
+    razorpay: {
+      enabled: true,
+      keyId: env.RAZORPAY_KEY_ID!,
+      orderId: razorpayOrder.id,
+      amountPaise: razorpayOrder.amount,
+      currency: razorpayOrder.currency,
+      name: 'NH Styx',
+      description: `Order ${order.orderNumber}`,
+      prefill: {
+        name: customer.ownerName ?? customer.shopName,
+        contact: customer.phone,
+        email: customer.email,
+      },
+      notes: {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        receipt: razorpayOrder.receipt,
+      },
+    } satisfies RazorpayCheckout,
+  };
 }
 
 export async function listOrders(
@@ -374,31 +491,22 @@ export async function verifyRazorpay(
       where: { orderId, method: PaymentMethod.RAZORPAY, status: PaymentStatus.CREATED },
       orderBy: { createdAt: 'desc' },
     });
-    if (intent) {
-      await tx.payment.update({
-        where: { id: intent.id },
-        data: {
-          status: PaymentStatus.PAID,
-          paidAt: new Date(),
-          razorpayOrderId: input.razorpayOrderId,
-          razorpayPaymentId: input.razorpayPaymentId,
-          razorpaySignature: input.razorpaySignature,
-        },
-      });
-    } else {
-      await tx.payment.create({
-        data: {
-          orderId,
-          method: PaymentMethod.RAZORPAY,
-          amountPaise: order.amountDuePaise,
-          status: PaymentStatus.PAID,
-          paidAt: new Date(),
-          razorpayOrderId: input.razorpayOrderId,
-          razorpayPaymentId: input.razorpayPaymentId,
-          razorpaySignature: input.razorpaySignature,
-        },
-      });
+    if (!intent) {
+      throw ApiError.badRequest('No pending Razorpay payment found for this order');
     }
+    if (intent.razorpayOrderId && intent.razorpayOrderId !== input.razorpayOrderId) {
+      throw ApiError.badRequest('Razorpay order does not match this checkout');
+    }
+    await tx.payment.update({
+      where: { id: intent.id },
+      data: {
+        status: PaymentStatus.PAID,
+        paidAt: new Date(),
+        razorpayOrderId: input.razorpayOrderId,
+        razorpayPaymentId: input.razorpayPaymentId,
+        razorpaySignature: input.razorpaySignature,
+      },
+    });
     return recompute(tx, orderId);
   });
 }
