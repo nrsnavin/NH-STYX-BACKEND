@@ -81,7 +81,7 @@ async function main() {
   // --- Customer (shop owner) in Pune → served by the Pune store ---
   const customer = await prisma.customer.upsert({
     where: { phone: '9876543210' },
-    update: { storeId: pune.id },
+    update: { storeId: pune.id, status: 'APPROVED', creditApproved: true },
     create: {
       shopName: 'Trendy Threads Boutique',
       ownerName: 'Asha Verma',
@@ -89,6 +89,9 @@ async function main() {
       email: 'asha@trendythreads.in',
       gstin: '27ABCDE1234F1Z5',
       password: await hash('Customer@123'),
+      status: 'APPROVED',
+      approvedAt: new Date(),
+      creditApproved: true,
       creditLimitPaise: 5_00_000, // ₹5,000
       creditDays: 30,
       storeId: pune.id,
@@ -108,6 +111,21 @@ async function main() {
     },
   });
   console.log(`   Customer ${customer.shopName} ready (store: Pune).`);
+
+  // A PENDING shop so the agent's approval queue isn't empty.
+  await prisma.customer.upsert({
+    where: { phone: '9812345678' },
+    update: {},
+    create: {
+      shopName: 'New Look Garments',
+      ownerName: 'Ravi Kumar',
+      phone: '9812345678',
+      password: await hash('Customer@123'),
+      status: 'PENDING',
+      storeId: pune.id,
+      cart: { create: {} },
+    },
+  });
 
   // --- Categories (Amazon-style tree: top-level + sub-categories) ---
   const cat = (name: string, slug: string, sortOrder: number, parentId?: string) =>

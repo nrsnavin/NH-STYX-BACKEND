@@ -61,24 +61,27 @@ export async function customerRegister(input: {
       email: input.email,
       gstin: input.gstin,
       storeId,
+      // New shops are PENDING until the serving store's agent approves them.
+      status: 'PENDING',
       password: await hashPassword(input.password),
       cart: { create: {} },
     },
     select: {
       id: true,
       shopName: true,
-      ownerName: true,
       phone: true,
-      email: true,
-      gstin: true,
+      status: true,
       store: storeSelect,
     },
   });
 
+  // No tokens are issued — the shop cannot sign in until it is approved.
   return {
-    customer,
-    accessToken: signAccessToken({ sub: customer.id, type: 'CUSTOMER' }),
-    refreshToken: signRefreshToken({ sub: customer.id, type: 'CUSTOMER' }),
+    status: customer.status,
+    store: customer.store,
+    message: customer.store
+      ? `Your request has been sent to ${customer.store.name}. You can sign in once a store agent approves it.`
+      : 'Your request was received. We will assign a store and notify you once approved.',
   };
 }
 
@@ -93,6 +96,16 @@ export async function customerLogin(input: { phone: string; password: string }) 
   if (!customer.isActive) {
     throw ApiError.forbidden('Your account is disabled. Please contact support.');
   }
+  if (customer.status === 'PENDING') {
+    throw ApiError.forbidden('Your account is awaiting approval from the store agent.');
+  }
+  if (customer.status === 'REJECTED') {
+    throw ApiError.forbidden(
+      customer.rejectionReason
+        ? `Your registration was declined: ${customer.rejectionReason}`
+        : 'Your registration was declined. Please contact support.',
+    );
+  }
 
   return {
     customer: {
@@ -102,6 +115,10 @@ export async function customerLogin(input: { phone: string; password: string }) 
       phone: customer.phone,
       email: customer.email,
       gstin: customer.gstin,
+      status: customer.status,
+      creditApproved: customer.creditApproved,
+      creditLimitPaise: customer.creditLimitPaise,
+      creditDays: customer.creditDays,
       store: customer.store,
     },
     accessToken: signAccessToken({ sub: customer.id, type: 'CUSTOMER' }),
@@ -119,6 +136,8 @@ export async function customerProfile(customerId: string) {
       phone: true,
       email: true,
       gstin: true,
+      status: true,
+      creditApproved: true,
       creditLimitPaise: true,
       creditDays: true,
       store: storeSelect,

@@ -22,6 +22,8 @@ interface CreateOrderInput {
   addressId: string;
   paymentMethod: PaymentMethod;
   notes?: string;
+  // Customer-supplied transfer reference (UTR / txn id) for BANK_TRANSFER.
+  bankReference?: string;
 }
 
 /** Checkout: turns the customer's cart into a GST-computed order. */
@@ -106,16 +108,35 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
   const discountPaise = 0;
   const totalPaise = subtotalPaise + cgstTotal + sgstTotal + igstTotal + deliveryPaise - discountPaise;
 
-  // Payment-method specifics.
+  // Payment-method specifics. COD is not offered.
+  if (input.paymentMethod === PaymentMethod.COD) {
+    throw ApiError.badRequest('Cash on delivery is not available');
+  }
   if (input.paymentMethod === PaymentMethod.CREDIT) {
-    if (totalPaise > customer.creditLimitPaise) {
-      throw ApiError.badRequest('Order exceeds your available credit limit');
+    if (!customer.creditApproved || customer.creditLimitPaise <= 0) {
+      throw ApiError.badRequest('Credit is not approved for your account yet');
+    }
+    // Available credit = approved limit minus what's still owed on open credit orders.
+    const open = await prisma.order.aggregate({
+      where: { customerId, paymentMethod: PaymentMethod.CREDIT, paymentStatus: { not: 'PAID' } },
+      _sum: { amountDuePaise: true },
+    });
+    const outstanding = open._sum.amountDuePaise ?? 0;
+    const available = customer.creditLimitPaise - outstanding;
+    if (totalPaise > available) {
+      throw ApiError.badRequest(
+        `Order exceeds your available credit (₹${(available / 100).toFixed(0)} of ₹${(customer.creditLimitPaise / 100).toFixed(0)} left)`,
+      );
     }
   }
+  if (input.paymentMethod === PaymentMethod.BANK_TRANSFER && !input.bankReference?.trim()) {
+    throw ApiError.badRequest('Enter your bank transfer reference to place the order');
+  }
+
+  // CREDIT is confirmed immediately (pay later); RAZORPAY awaits payment and
+  // BANK_TRANSFER awaits staff verification of the transfer.
   const initialStatus =
-    input.paymentMethod === PaymentMethod.COD || input.paymentMethod === PaymentMethod.CREDIT
-      ? OrderStatus.CONFIRMED
-      : OrderStatus.PENDING;
+    input.paymentMethod === PaymentMethod.CREDIT ? OrderStatus.CONFIRMED : OrderStatus.PENDING;
   const dueDate =
     input.paymentMethod === PaymentMethod.CREDIT && customer.creditDays > 0
       ? new Date(Date.now() + customer.creditDays * 24 * 60 * 60 * 1000)
@@ -180,6 +201,21 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
           razorpayOrderId: env.RAZORPAY_KEY_ID
             ? undefined // a real Razorpay order id would be created via their API
             : `stub_${crypto.randomBytes(8).toString('hex')}`,
+        },
+      });
+    }
+
+    // For a bank transfer, record the customer's reference; staff verify it
+    // and mark it paid later (order stays UNPAID until then).
+    if (input.paymentMethod === PaymentMethod.BANK_TRANSFER) {
+      await tx.payment.create({
+        data: {
+          orderId: order.id,
+          method: PaymentMethod.BANK_TRANSFER,
+          amountPaise: totalPaise,
+          status: PaymentStatus.CREATED,
+          reference: input.bankReference?.trim(),
+          note: input.notes?.trim(),
         },
       });
     }

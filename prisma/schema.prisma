@@ -35,6 +35,14 @@ enum Role {
   AGENT
 }
 
+// Approval state of a shop-owner account. New registrations start PENDING and
+// must be approved by the serving store's agent before they can sign in.
+enum CustomerStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 // Unit of measure — garment supplies sell in more than just "pieces".
 enum ProductUnit {
   PIECE
@@ -114,10 +122,19 @@ model Customer {
   password  String? // bcrypt hash; null when using OTP-only login
   gstin     String? // 15-char GSTIN; required only if they want GST invoices
 
-  // Credit terms (used only when an order is placed on CREDIT)
+  // Credit terms. creditApproved is granted by an admin; CREDIT checkout is
+  // only allowed when approved AND the order fits the available limit.
   creditLimitPaise Int     @default(0)
   creditDays       Int     @default(0) // e.g. 15 / 30 day terms
+  creditApproved   Boolean @default(false)
   isActive         Boolean @default(true)
+
+  // Registration approval — a new shop is PENDING until the serving store's
+  // agent approves it; only APPROVED shops can sign in.
+  status          CustomerStatus @default(PENDING)
+  approvedAt      DateTime?
+  approvedById    String? // staff (User) who approved/rejected
+  rejectionReason String?
 
   // The store that serves this customer's city (assigned at registration,
   // reassignable by admin). Their catalog/pricing/fulfilment come from it.
@@ -416,6 +433,11 @@ model Payment {
   razorpayOrderId   String?
   razorpayPaymentId String?
   razorpaySignature String?
+
+  // Bank-transfer / offline reference (UTR, txn id) + any details the customer
+  // or staff attach. Used for BANK_TRANSFER and manual settlements.
+  reference String?
+  note      String?
 
   paidAt    DateTime?
   createdAt DateTime  @default(now())

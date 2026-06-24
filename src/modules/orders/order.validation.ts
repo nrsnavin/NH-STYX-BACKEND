@@ -4,8 +4,10 @@ import { OrderStatus, PaymentMethod } from '@prisma/client';
 export const createOrderSchema = z.object({
   body: z.object({
     addressId: z.string().uuid(),
-    paymentMethod: z.nativeEnum(PaymentMethod),
-    notes: z.string().optional(),
+    // COD is not offered — online, credit (if approved) or bank transfer only.
+    paymentMethod: z.enum(['RAZORPAY', 'CREDIT', 'BANK_TRANSFER']),
+    notes: z.string().max(500).optional(),
+    bankReference: z.string().max(120).optional(),
   }),
 });
 
