@@ -2,10 +2,15 @@ import { Request, Response } from 'express';
 import { OrderStatus } from '@prisma/client';
 import { asyncHandler } from '../../utils/asyncHandler';
 import * as orderService from './order.service';
+import { streamInvoice } from './invoice.service';
 
 export const create = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.createOrder(req.auth!.sub, req.body);
   res.status(201).json({ success: true, data });
+});
+
+export const invoice = asyncHandler(async (req: Request, res: Response) => {
+  await streamInvoice(req.params.id, req.auth!, res);
 });
 
 export const list = asyncHandler(async (req: Request, res: Response) => {

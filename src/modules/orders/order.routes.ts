@@ -23,6 +23,7 @@ router.post('/', authenticate, requireCustomer, validate(createOrderSchema), ord
 // Listing/detail — role-aware (customer → own, staff → all).
 router.get('/', authenticate, validate(listOrdersSchema), orderController.list);
 router.get('/:id', authenticate, validate(orderIdSchema), orderController.getOne);
+router.get('/:id/invoice', authenticate, validate(orderIdSchema), orderController.invoice);
 
 // Customer pays an online order (Razorpay).
 router.post(
