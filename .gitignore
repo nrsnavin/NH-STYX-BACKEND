@@ -39,3 +39,4 @@ coverage/
 *.tsbuildinfo
 .cache/
 tmp/
+uploads/

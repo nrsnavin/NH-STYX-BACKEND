@@ -9,6 +9,7 @@ import orderRoutes from '../modules/orders/order.routes';
 import customerRoutes from '../modules/customers/customer.routes';
 import searchRoutes from '../modules/search/search.routes';
 import storeRoutes from '../modules/stores/store.routes';
+import uploadRoutes from '../modules/uploads/upload.routes';
 
 const router = Router();
 
@@ -38,5 +39,6 @@ router.use('/orders', orderRoutes);
 router.use('/customers', customerRoutes);
 router.use('/search', searchRoutes);
 router.use('/stores', storeRoutes);
+router.use('/uploads', uploadRoutes);
 
 export default router;

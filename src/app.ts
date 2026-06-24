@@ -7,6 +7,7 @@ import { pinoHttp } from 'pino-http';
 import { env } from './config/env';
 import { logger } from './config/logger';
 import apiRoutes from './routes';
+import { UPLOAD_DIR } from './modules/uploads/upload.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 
 export function createApp(): Application {
@@ -44,6 +45,15 @@ export function createApp(): Application {
       docs: `${env.API_PREFIX}/health`,
     });
   });
+
+  // Uploaded product images (served cross-origin so the web console + apps can
+  // load them). Files are written under ./uploads by the upload route.
+  app.use(
+    '/uploads',
+    express.static(UPLOAD_DIR, {
+      setHeaders: (res) => res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'),
+    }),
+  );
 
   // Versioned API.
   app.use(env.API_PREFIX, apiRoutes);
