@@ -1,0 +1,33 @@
+import { Request, Response, Router } from 'express';
+import { authenticate, authorize } from '../../middlewares/auth.middleware';
+import { asyncHandler } from '../../utils/asyncHandler';
+import { getStaffStoreId } from '../../utils/storeContext';
+import * as statsService from './stats.service';
+
+const router = Router();
+const staff = [authenticate, authorize('ADMIN', 'AGENT')] as const;
+
+async function scope(req: Request): Promise<string | null> {
+  return req.auth?.role === 'ADMIN' ? null : getStaffStoreId(req.auth!.sub);
+}
+
+router.get(
+  '/dashboard',
+  ...staff,
+  asyncHandler(async (req: Request, res: Response) => {
+    const data = await statsService.dashboard(await scope(req));
+    res.json({ success: true, data });
+  }),
+);
+
+router.get(
+  '/low-stock',
+  ...staff,
+  asyncHandler(async (req: Request, res: Response) => {
+    const threshold = req.query.threshold ? Number(req.query.threshold) : undefined;
+    const items = await statsService.lowStock(await scope(req), threshold);
+    res.json({ success: true, items });
+  }),
+);
+
+export default router;
