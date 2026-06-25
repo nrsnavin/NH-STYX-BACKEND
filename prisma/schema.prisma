@@ -177,6 +177,7 @@ model Customer {
   orders     Order[]
   lead       Lead?
   activities Activity[]
+  wishlist   WishlistItem[]
 
   @@index([phone])
   @@index([storeId])
@@ -299,6 +300,7 @@ model Product {
   cartItems      CartItem[]
   orderItems     OrderItem[]
   stockMovements StockMovement[]
+  wishlistItems  WishlistItem[]
 
   @@index([categoryId])
 }
@@ -607,4 +609,23 @@ model AuditLog {
   @@index([entity, entityId])
   @@index([actorId])
   @@index([createdAt])
+}
+
+// ------------------------------------------------------------
+//  Wishlist  (a shop owner's saved products)
+// ------------------------------------------------------------
+
+// One row per (customer, product) the shop has saved for later. The unique
+// constraint makes "is this wishlisted?" and toggling idempotent.
+model WishlistItem {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([customerId, productId])
+  @@index([customerId])
+  @@index([productId])
 }

@@ -133,7 +133,7 @@ export async function getStoreProduct(storeId: string, productId: string) {
 
 /** Compose the store view for a list of product ids, preserving their order
  *  and dropping any the store no longer actively stocks. */
-async function storeProductsByIds(storeId: string, productIds: string[]) {
+export async function storeProductsByIds(storeId: string, productIds: string[]) {
   if (productIds.length === 0) return [];
   const rows = await prisma.storeProduct.findMany({
     where: {

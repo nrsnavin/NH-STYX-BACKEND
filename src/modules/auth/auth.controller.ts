@@ -27,6 +27,11 @@ export const customerMe = asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true, data: result });
 });
 
+export const customerUpdateMe = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.customerUpdateSelf(req.auth!.sub, req.body);
+  res.json({ success: true, data: result });
+});
+
 export const refresh = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.refresh(req.body.refreshToken);
   res.json({ success: true, data: result });

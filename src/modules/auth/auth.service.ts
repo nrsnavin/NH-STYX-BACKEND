@@ -139,6 +139,28 @@ export async function customerLogin(input: { phone: string; password: string }) 
   };
 }
 
+// Fields a shop owner may edit on their own profile. Empty strings clear the
+// nullable ones (e.g. removing a GSTIN).
+interface CustomerSelfUpdate {
+  shopName?: string;
+  ownerName?: string;
+  email?: string;
+  gstin?: string;
+}
+
+export async function customerUpdateSelf(customerId: string, input: CustomerSelfUpdate) {
+  const blank = (v?: string) => (v !== undefined ? (v.trim() === '' ? null : v.trim()) : undefined);
+  const data = {
+    ...(input.shopName !== undefined ? { shopName: input.shopName.trim() } : {}),
+    ...(input.ownerName !== undefined ? { ownerName: blank(input.ownerName) } : {}),
+    ...(input.email !== undefined ? { email: blank(input.email) } : {}),
+    ...(input.gstin !== undefined ? { gstin: blank(input.gstin) } : {}),
+  };
+
+  await prisma.customer.update({ where: { id: customerId }, data });
+  return customerProfile(customerId);
+}
+
 export async function customerProfile(customerId: string) {
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },

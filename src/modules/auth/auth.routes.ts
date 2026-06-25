@@ -4,6 +4,7 @@ import { authenticate, requireCustomer, requireStaff } from '../../middlewares/a
 import {
   customerLoginSchema,
   customerRegisterSchema,
+  customerUpdateSelfSchema,
   refreshSchema,
   staffLoginSchema,
 } from './auth.validation';
@@ -19,6 +20,13 @@ router.get('/staff/me', authenticate, requireStaff, authController.staffMe);
 router.post('/customer/register', validate(customerRegisterSchema), authController.customerRegister);
 router.post('/customer/login', validate(customerLoginSchema), authController.customerLogin);
 router.get('/customer/me', authenticate, requireCustomer, authController.customerMe);
+router.patch(
+  '/customer/me',
+  authenticate,
+  requireCustomer,
+  validate(customerUpdateSelfSchema),
+  authController.customerUpdateMe,
+);
 
 // Shared
 router.post('/refresh', validate(refreshSchema), authController.refresh);

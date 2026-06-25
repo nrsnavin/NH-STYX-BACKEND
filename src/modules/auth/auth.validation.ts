@@ -34,6 +34,18 @@ export const customerLoginSchema = z.object({
   }),
 });
 
+// A shop owner editing their own profile (GST details screen, etc). Phone is
+// their identity and city/store routing is approval-gated, so neither is
+// editable here. Empty strings clear the optional fields.
+export const customerUpdateSelfSchema = z.object({
+  body: z.object({
+    shopName: z.string().min(2).optional(),
+    ownerName: z.string().min(2).or(z.literal('')).optional(),
+    email: z.string().email().or(z.literal('')).optional(),
+    gstin: z.string().length(15, 'GSTIN must be 15 characters').or(z.literal('')).optional(),
+  }),
+});
+
 export const refreshSchema = z.object({
   body: z.object({
     refreshToken: z.string().min(10),
