@@ -83,7 +83,9 @@ export async function streamInvoice(
   doc.font('Helvetica').fontSize(8);
   for (const it of order.items) {
     const y = doc.y;
-    doc.text(it.productName, cols.item, y, { width: 195 });
+    doc.text(it.variantName ? `${it.productName} (${it.variantName})` : it.productName, cols.item, y, {
+      width: 195,
+    });
     const lineY = Math.max(y, doc.y);
     doc.text(it.hsnCode ?? '-', cols.hsn, y);
     doc.text(String(it.quantity), cols.qty, y);

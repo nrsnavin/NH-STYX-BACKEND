@@ -52,6 +52,38 @@ async function nextOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
   return `ORD-${year}-${String(Number(nextval)).padStart(5, '0')}`;
 }
 
+/** Concurrency-safe stock decrement for an order line — on the variant for a
+ *  variant line, otherwise the store-product — plus a SALE ledger entry. */
+async function decrementStock(
+  tx: Prisma.TransactionClient,
+  storeId: string,
+  productId: string,
+  variantId: string | null,
+  quantity: number,
+  productName: string,
+  orderId: string,
+) {
+  const dec = variantId
+    ? await tx.storeVariant.updateMany({
+        where: { storeId, variantId, stockQty: { gte: quantity } },
+        data: { stockQty: { decrement: quantity } },
+      })
+    : await tx.storeProduct.updateMany({
+        where: { storeId, productId, stockQty: { gte: quantity } },
+        data: { stockQty: { decrement: quantity } },
+      });
+  if (dec.count !== 1) throw ApiError.badRequest(`${productName} just went out of stock`);
+
+  await recordStockMovement(tx, {
+    storeId,
+    productId,
+    variantId,
+    deltaQty: -quantity,
+    type: StockMovementType.SALE,
+    orderId,
+  });
+}
+
 function razorpayConfigured(): boolean {
   return Boolean(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
 }
@@ -148,18 +180,24 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
 
   const cart = await prisma.cart.findUnique({
     where: { customerId },
-    include: { items: { include: { product: true } } },
+    include: { items: { include: { product: true, variant: true } } },
   });
   if (!cart || cart.items.length === 0) {
     throw ApiError.badRequest('Your cart is empty');
   }
 
-  // Per-store price/stock/tiers for everything in the cart.
+  // Per-store price/stock/tiers for base products, and per-variant price/stock
+  // for variant lines.
   const storeProducts = await prisma.storeProduct.findMany({
     where: { storeId: store.id, productId: { in: cart.items.map((i) => i.productId) } },
     include: { priceTiers: true },
   });
   const spByProduct = new Map(storeProducts.map((sp) => [sp.productId, sp]));
+  const variantIds = cart.items.filter((i) => i.variantId).map((i) => i.variantId!);
+  const storeVariants = variantIds.length
+    ? await prisma.storeVariant.findMany({ where: { storeId: store.id, variantId: { in: variantIds } } })
+    : [];
+  const svByVariant = new Map(storeVariants.map((sv) => [sv.variantId, sv]));
 
   // GST seller side = the fulfilling store's state (multi-state ready).
   const intra = isIntraState(address.stateCode, address.state, store.stateCode, store.state);
@@ -171,18 +209,36 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
 
   const orderItems = cart.items.map((item) => {
     const { product, quantity } = item;
-    const sp = spByProduct.get(item.productId);
-    if (!product.isActive || !sp || !sp.isActive) {
-      throw ApiError.badRequest(`${product.name} is no longer available`);
+
+    let unitPricePaise: number;
+    let stockQty: number;
+    let variantName: string | null = null;
+    if (item.variantId) {
+      const sv = svByVariant.get(item.variantId);
+      if (!product.isActive || !sv || !sv.isActive || !item.variant?.isActive) {
+        throw ApiError.badRequest(`${product.name} (${item.variant?.name ?? 'option'}) is no longer available`);
+      }
+      unitPricePaise = sv.pricePaise;
+      stockQty = sv.stockQty;
+      variantName = item.variant?.name ?? null;
+    } else {
+      const sp = spByProduct.get(item.productId);
+      if (!product.isActive || !sp || !sp.isActive) {
+        throw ApiError.badRequest(`${product.name} is no longer available`);
+      }
+      unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, quantity);
+      stockQty = sp.stockQty;
     }
+
     if (quantity < product.moqQty) {
       throw ApiError.badRequest(`Minimum order quantity for ${product.name} is ${product.moqQty}`);
     }
-    if (quantity > sp.stockQty) {
-      throw ApiError.badRequest(`Insufficient stock for ${product.name}`);
+    if (quantity > stockQty) {
+      throw ApiError.badRequest(
+        `Insufficient stock for ${product.name}${variantName ? ` (${variantName})` : ''}`,
+      );
     }
 
-    const unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, quantity);
     const lineSubtotalPaise = unitPricePaise * quantity;
     const tax = computeLineTax(lineSubtotalPaise, product.gstRatePercent, intra);
 
@@ -193,7 +249,9 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
 
     return {
       productId: product.id,
+      variantId: item.variantId ?? null,
       productName: product.name,
+      variantName,
       hsnCode: product.hsnCode,
       unit: product.unit,
       quantity,
@@ -315,22 +373,10 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       }
 
       if (input.paymentMethod !== PaymentMethod.RAZORPAY) {
-        // Conditional decrement guards against overselling under concurrency.
+        // Conditional decrement guards against overselling under concurrency —
+        // on the variant for variant lines, otherwise on the store-product.
         for (const item of cart.items) {
-          const dec = await tx.storeProduct.updateMany({
-            where: { storeId: store.id, productId: item.productId, stockQty: { gte: item.quantity } },
-            data: { stockQty: { decrement: item.quantity } },
-          });
-          if (dec.count !== 1) {
-            throw ApiError.badRequest(`${item.product.name} just went out of stock`);
-          }
-          await recordStockMovement(tx, {
-            storeId: store.id,
-            productId: item.productId,
-            deltaQty: -item.quantity,
-            type: StockMovementType.SALE,
-            orderId: order.id,
-          });
+          await decrementStock(tx, store.id, item.productId, item.variantId, item.quantity, item.product.name, order.id);
         }
         await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
       }
@@ -432,7 +478,7 @@ interface StaffOrderInput {
   customerId: string;
   addressId?: string;
   paymentMethod: PaymentMethod;
-  items: { productId: string; quantity: number }[];
+  items: { productId: string; quantity: number; variantId?: string }[];
   notes?: string;
   bankReference?: string;
 }
@@ -483,6 +529,14 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
     include: { priceTiers: true },
   });
   const spByProduct = new Map(storeProducts.map((sp) => [sp.productId, sp]));
+  const variantIds = input.items.filter((i) => i.variantId).map((i) => i.variantId!);
+  const storeVariants = variantIds.length
+    ? await prisma.storeVariant.findMany({
+        where: { storeId: store.id, variantId: { in: variantIds } },
+        include: { variant: true },
+      })
+    : [];
+  const svByVariant = new Map(storeVariants.map((sv) => [sv.variantId, sv]));
 
   const intra = isIntraState(address.stateCode, address.state, store.stateCode, store.state);
   let subtotalPaise = 0;
@@ -490,20 +544,38 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
   let sgstTotal = 0;
   let igstTotal = 0;
 
-  const orderItems = input.items.map(({ productId, quantity }) => {
+  const orderItems = input.items.map(({ productId, quantity, variantId }) => {
     const product = productById.get(productId);
-    const sp = spByProduct.get(productId);
     if (!product) throw ApiError.badRequest('A selected product was not found');
-    if (!product.isActive || !sp || !sp.isActive) {
-      throw ApiError.badRequest(`${product.name} is not stocked in this store`);
+
+    let unitPricePaise: number;
+    let stockQty: number;
+    let variantName: string | null = null;
+    if (variantId) {
+      const sv = svByVariant.get(variantId);
+      if (!product.isActive || !sv || !sv.isActive || !sv.variant.isActive || sv.variant.productId !== productId) {
+        throw ApiError.badRequest(`${product.name} (${sv?.variant.name ?? 'option'}) is not stocked in this store`);
+      }
+      unitPricePaise = sv.pricePaise;
+      stockQty = sv.stockQty;
+      variantName = sv.variant.name;
+    } else {
+      const sp = spByProduct.get(productId);
+      if (!product.isActive || !sp || !sp.isActive) {
+        throw ApiError.badRequest(`${product.name} is not stocked in this store`);
+      }
+      unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, quantity);
+      stockQty = sp.stockQty;
     }
+
     if (quantity < product.moqQty) {
       throw ApiError.badRequest(`Minimum order quantity for ${product.name} is ${product.moqQty}`);
     }
-    if (quantity > sp.stockQty) {
-      throw ApiError.badRequest(`Insufficient stock for ${product.name} (have ${sp.stockQty})`);
+    if (quantity > stockQty) {
+      throw ApiError.badRequest(
+        `Insufficient stock for ${product.name}${variantName ? ` (${variantName})` : ''} (have ${stockQty})`,
+      );
     }
-    const unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, quantity);
     const lineSubtotalPaise = unitPricePaise * quantity;
     const tax = computeLineTax(lineSubtotalPaise, product.gstRatePercent, intra);
     subtotalPaise += lineSubtotalPaise;
@@ -512,7 +584,9 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
     igstTotal += tax.igstPaise;
     return {
       productId: product.id,
+      variantId: variantId ?? null,
       productName: product.name,
+      variantName,
       hsnCode: product.hsnCode,
       unit: product.unit,
       quantity,
@@ -603,16 +677,22 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
       // concurrent orders — if it doesn't update exactly one row, we roll back.
       if (input.paymentMethod !== PaymentMethod.RAZORPAY) {
         for (const item of orderItems) {
-          const dec = await tx.storeProduct.updateMany({
-            where: { storeId: store.id, productId: item.productId, stockQty: { gte: item.quantity } },
-            data: { stockQty: { decrement: item.quantity } },
-          });
+          const dec = item.variantId
+            ? await tx.storeVariant.updateMany({
+                where: { storeId: store.id, variantId: item.variantId, stockQty: { gte: item.quantity } },
+                data: { stockQty: { decrement: item.quantity } },
+              })
+            : await tx.storeProduct.updateMany({
+                where: { storeId: store.id, productId: item.productId, stockQty: { gte: item.quantity } },
+                data: { stockQty: { decrement: item.quantity } },
+              });
           if (dec.count !== 1) {
             throw ApiError.badRequest(`${item.productName} just went out of stock`);
           }
           await recordStockMovement(tx, {
             storeId: store.id,
             productId: item.productId,
+            variantId: item.variantId,
             deltaQty: -item.quantity,
             type: StockMovementType.SALE,
             orderId: created.id,
@@ -897,13 +977,21 @@ export async function verifyRazorpay(
     // already paid, so we honour the order even if it drives stock negative.
     if (order.storeId) {
       for (const item of order.items) {
-        await tx.storeProduct.updateMany({
-          where: { storeId: order.storeId, productId: item.productId },
-          data: { stockQty: { decrement: item.quantity } },
-        });
+        if (item.variantId) {
+          await tx.storeVariant.updateMany({
+            where: { storeId: order.storeId, variantId: item.variantId },
+            data: { stockQty: { decrement: item.quantity } },
+          });
+        } else {
+          await tx.storeProduct.updateMany({
+            where: { storeId: order.storeId, productId: item.productId },
+            data: { stockQty: { decrement: item.quantity } },
+          });
+        }
         await recordStockMovement(tx, {
           storeId: order.storeId,
           productId: item.productId,
+          variantId: item.variantId,
           deltaQty: -item.quantity,
           type: StockMovementType.SALE,
           orderId: order.id,
@@ -912,11 +1000,15 @@ export async function verifyRazorpay(
       }
     }
     // Only clear the lines this order covered (not the whole cart) — correct for
-    // agent-placed orders and keeps items added after checkout.
+    // agent-placed orders and keeps items added after checkout. Match each
+    // ordered (product, variant) tuple precisely.
     const cart = await tx.cart.findUnique({ where: { customerId } });
     if (cart) {
       await tx.cartItem.deleteMany({
-        where: { cartId: cart.id, productId: { in: order.items.map((i) => i.productId) } },
+        where: {
+          cartId: cart.id,
+          OR: order.items.map((i) => ({ productId: i.productId, variantId: i.variantId })),
+        },
       });
     }
 

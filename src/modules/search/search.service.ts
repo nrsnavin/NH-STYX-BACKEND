@@ -175,7 +175,10 @@ async function retrieveCandidates(
     ];
   }
 
-  const include = { product: { include: { category: true } }, priceTiers: true } as const;
+  const include = {
+    product: { include: { category: true, variants: { where: { isActive: true } } } },
+    priceTiers: true,
+  } as const;
 
   const matchedRows = await prisma.storeProduct.findMany({
     where: {

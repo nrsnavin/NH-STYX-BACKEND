@@ -3,6 +3,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { audit } from '../../utils/audit';
 import { getCustomerStoreId } from '../../utils/storeContext';
 import * as productService from './product.service';
+import { composeStoreVariants } from '../variants/variant.service';
 
 /**
  * Customers get the store-scoped catalog (their store's price/stock); staff get
@@ -76,7 +77,9 @@ export const getOne = asyncHandler(async (req: Request, res: Response) => {
       return;
     }
     const data = await productService.getStoreProduct(storeId, req.params.id);
-    res.json({ success: true, data });
+    // Attach the store's variants (size/colour) for products sold that way.
+    const variants = data.hasVariants ? await composeStoreVariants(storeId, req.params.id) : [];
+    res.json({ success: true, data: { ...data, variants } });
     return;
   }
 

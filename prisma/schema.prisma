@@ -210,6 +210,7 @@ model Store {
   agents         User[]
   customers      Customer[]
   inventory      StoreProduct[]
+  variantStock   StoreVariant[]
   orders         Order[]
   leads          Lead[]
   stockMovements StockMovement[]
@@ -299,12 +300,60 @@ model Product {
   // Price & stock are PER-STORE — see StoreProduct. Product is the shared
   // catalog definition (name, category, HSN, GST rate, MOQ, image).
   storeProducts  StoreProduct[]
+  variants       ProductVariant[]
   cartItems      CartItem[]
   orderItems     OrderItem[]
   stockMovements StockMovement[]
   wishlistItems  WishlistItem[]
 
   @@index([categoryId])
+}
+
+// An orderable variation of a product (e.g. "Red / M"). Price & stock are
+// PER-STORE (see StoreVariant); this row is the shared definition (label, SKU,
+// attributes, image). A product with no variants is sold via StoreProduct.
+model ProductVariant {
+  id         String  @id @default(uuid())
+  productId  String
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name       String // display label, e.g. "Red / M"
+  sku        String? @unique
+  attributes Json? // optional breakdown, e.g. { "size": "M", "color": "Red" }
+  mrpPaise   Int? // optional per-variant MRP (else the product's)
+  imageUrl   String?
+  sortOrder  Int     @default(0)
+  isActive   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  storeVariants  StoreVariant[]
+  cartItems      CartItem[]
+  orderItems     OrderItem[]
+  stockMovements StockMovement[]
+
+  @@index([productId])
+}
+
+// Per-store price + stock for a variant (mirrors StoreProduct, per variant).
+model StoreVariant {
+  id        String         @id @default(uuid())
+  storeId   String
+  store     Store          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  pricePaise Int
+  mrpPaise   Int?
+  stockQty   Int     @default(0)
+  isActive   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeId, variantId])
+  @@index([storeId])
+  @@index([variantId])
 }
 
 // Per-store stock + price for a shared catalog product. A product is only
@@ -358,19 +407,24 @@ model Cart {
 }
 
 model CartItem {
-  id        String   @id @default(uuid())
+  id        String          @id @default(uuid())
   cartId    String
-  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  cart      Cart            @relation(fields: [cartId], references: [id], onDelete: Cascade)
   productId String
-  product   Product  @relation(fields: [productId], references: [id])
+  product   Product         @relation(fields: [productId], references: [id])
+  // The chosen variant, when the product has variants (null = base product).
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id])
   quantity  Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 
   // Price is NOT stored here — it's resolved (incl. tier) at checkout,
-  // so the cart always reflects current pricing.
-  @@unique([cartId, productId]) // one row per product per cart
+  // so the cart always reflects current pricing. One line per (product,
+  // variant) is enforced in the service (nullable variantId rules out a DB
+  // unique that dedupes base-product lines reliably).
   @@index([cartId])
+  @@index([cartId, productId])
 }
 
 // ------------------------------------------------------------
@@ -445,9 +499,13 @@ model OrderItem {
   order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productId String
   product   Product @relation(fields: [productId], references: [id])
+  // The ordered variant, if any (null = base product).
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id])
 
   // ---- Snapshots taken at checkout ----
   productName    String
+  variantName    String? // variant label snapshot, e.g. "Red / M"
   hsnCode        String?
   unit           ProductUnit
   quantity       Int
@@ -569,6 +627,9 @@ model StockMovement {
   store     Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
   productId String
   product   Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // The variant whose stock moved, when applicable.
+  variantId String?
+  variant   ProductVariant?   @relation(fields: [variantId], references: [id], onDelete: Cascade)
   deltaQty  Int // signed: negative = consumed, positive = added
   type      StockMovementType
   reason    String?

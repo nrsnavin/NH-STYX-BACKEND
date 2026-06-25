@@ -19,7 +19,13 @@ export const staffOrderSchema = z.object({
     addressId: z.string().uuid().optional(),
     paymentMethod: z.enum(['RAZORPAY', 'CREDIT', 'BANK_TRANSFER']),
     items: z
-      .array(z.object({ productId: z.string().uuid(), quantity: z.number().int().positive() }))
+      .array(
+        z.object({
+          productId: z.string().uuid(),
+          variantId: z.string().uuid().optional(),
+          quantity: z.number().int().positive(),
+        }),
+      )
       .min(1, 'Add at least one item'),
     notes: z.string().max(500).optional(),
     bankReference: z.string().max(120).optional(),

@@ -17,7 +17,7 @@ import { slugify } from '../../utils/slug';
 
 type CatalogProduct = Prisma.ProductGetPayload<{ include: { category: true } }>;
 export type StoreProductWithTiers = Prisma.StoreProductGetPayload<{
-  include: { product: { include: { category: true } }; priceTiers: true };
+  include: { product: { include: { category: true, variants: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } }; priceTiers: true };
 }>;
 
 export function composeStoreProduct(sp: StoreProductWithTiers) {
@@ -41,6 +41,9 @@ export function composeStoreProduct(sp: StoreProductWithTiers) {
     mrpPaise: sp.mrpPaise ?? p.mrpPaise,
     stockQty: sp.stockQty,
     inStock: sp.stockQty > 0,
+    // Whether this product is sold via variants (size/colour). When true the
+    // apps prompt the shopper to pick a variant instead of one-tap add.
+    hasVariants: p.variants.length > 0,
     priceTiers: [...sp.priceTiers]
       .sort((a, b) => a.minQty - b.minQty)
       .map((t) => ({ minQty: t.minQty, pricePaise: t.pricePaise })),
@@ -104,7 +107,7 @@ export async function listStoreProducts(params: StoreListParams) {
   const [rows, total] = await Promise.all([
     prisma.storeProduct.findMany({
       where,
-      include: { product: { include: { category: true } }, priceTiers: true },
+      include: { product: { include: { category: true, variants: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } }, priceTiers: true },
       skip: (page - 1) * limit,
       take: limit,
       orderBy: { createdAt: 'desc' },
@@ -122,7 +125,7 @@ export async function listStoreProducts(params: StoreListParams) {
 export async function getStoreProduct(storeId: string, productId: string) {
   const sp = await prisma.storeProduct.findUnique({
     where: { storeId_productId: { storeId, productId } },
-    include: { product: { include: { category: true } }, priceTiers: true },
+    include: { product: { include: { category: true, variants: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } }, priceTiers: true },
   });
   if (!sp || !sp.isActive || !sp.product.isActive) {
     throw ApiError.notFound('Product not found in your store');
@@ -143,7 +146,7 @@ export async function storeProductsByIds(storeId: string, productIds: string[]) 
       productId: { in: productIds },
       product: { isActive: true },
     },
-    include: { product: { include: { category: true } }, priceTiers: true },
+    include: { product: { include: { category: true, variants: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } }, priceTiers: true },
   });
   const byId = new Map(rows.map((r) => [r.productId, r]));
   return productIds

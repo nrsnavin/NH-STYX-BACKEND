@@ -7,6 +7,7 @@ export async function recordStockMovement(
   input: {
     storeId: string;
     productId: string;
+    variantId?: string | null;
     deltaQty: number;
     type: StockMovementType;
     orderId?: string | null;
@@ -18,6 +19,7 @@ export async function recordStockMovement(
     data: {
       storeId: input.storeId,
       productId: input.productId,
+      variantId: input.variantId ?? null,
       deltaQty: input.deltaQty,
       type: input.type,
       orderId: input.orderId ?? null,
