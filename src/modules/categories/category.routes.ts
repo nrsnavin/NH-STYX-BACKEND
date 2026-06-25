@@ -14,18 +14,18 @@ const router = Router();
 router.get('/', authenticate, categoryController.list);
 router.get('/:id', authenticate, validate(categoryIdSchema), categoryController.getOne);
 
-// Only admins manage the catalog taxonomy.
+// Staff (admins + agents) can add and edit categories; only admins delete.
 router.post(
   '/',
   authenticate,
-  authorize('ADMIN'),
+  authorize('ADMIN', 'AGENT'),
   validate(createCategorySchema),
   categoryController.create,
 );
 router.patch(
   '/:id',
   authenticate,
-  authorize('ADMIN'),
+  authorize('ADMIN', 'AGENT'),
   validate(updateCategorySchema),
   categoryController.update,
 );

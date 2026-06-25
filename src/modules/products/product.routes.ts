@@ -17,17 +17,18 @@ router.get('/best-selling', authenticate, productController.bestSelling);
 router.get('/recently-ordered', authenticate, productController.recentlyOrdered);
 router.get('/:id', authenticate, validate(productIdSchema), productController.getOne);
 
+// Staff (admins + agents) can add and edit catalog products; only admins delete.
 router.post(
   '/',
   authenticate,
-  authorize('ADMIN'),
+  authorize('ADMIN', 'AGENT'),
   validate(createProductSchema),
   productController.create,
 );
 router.patch(
   '/:id',
   authenticate,
-  authorize('ADMIN'),
+  authorize('ADMIN', 'AGENT'),
   validate(updateProductSchema),
   productController.update,
 );
