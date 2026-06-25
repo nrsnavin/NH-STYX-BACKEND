@@ -1,5 +1,6 @@
 import { Prisma, ProductUnit } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
+import { runWithoutTenant } from '../../lib/tenantContext';
 import { ApiError } from '../../utils/ApiError';
 import { slugify } from '../../utils/slug';
 
@@ -151,17 +152,22 @@ export async function storeProductsByIds(storeId: string, productIds: string[]) 
     .map(composeStoreProduct);
 }
 
-/** Best sellers in a store/city — ranked by total quantity ordered there. */
+/** Best sellers in a store/city — ranked by total quantity ordered there.
+ *  This is a store-wide aggregate across all shops, so it runs privileged:
+ *  under a customer's RLS context the groupBy would otherwise see only the
+ *  signed-in customer's own order items. */
 export async function bestSellingForStore(storeId: string, limit = 10) {
-  const grouped = await prisma.orderItem.groupBy({
-    by: ['productId'],
-    where: { order: { storeId } },
-    _sum: { quantity: true },
-    orderBy: { _sum: { quantity: 'desc' } },
-    take: limit * 2, // headroom: some may be unstocked/inactive and filtered out
+  return runWithoutTenant(async () => {
+    const grouped = await prisma.orderItem.groupBy({
+      by: ['productId'],
+      where: { order: { storeId } },
+      _sum: { quantity: true },
+      orderBy: { _sum: { quantity: 'desc' } },
+      take: limit * 2, // headroom: some may be unstocked/inactive and filtered out
+    });
+    const items = await storeProductsByIds(storeId, grouped.map((g) => g.productId));
+    return items.slice(0, limit);
   });
-  const items = await storeProductsByIds(storeId, grouped.map((g) => g.productId));
-  return items.slice(0, limit);
 }
 
 /** Products this customer ordered before (most recent first, de-duplicated),

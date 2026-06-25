@@ -1,4 +1,4 @@
-import { prisma } from '../../lib/prisma';
+import { prisma, tenantTransaction } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 
 interface AddressInput {
@@ -32,7 +32,7 @@ export async function createAddress(customerId: string, input: AddressInput) {
   const count = await prisma.address.count({ where: { customerId } });
   const makeDefault = input.isDefault || count === 0;
 
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(async (tx) => {
     if (makeDefault) {
       await tx.address.updateMany({ where: { customerId }, data: { isDefault: false } });
     }
@@ -44,7 +44,7 @@ export async function createAddress(customerId: string, input: AddressInput) {
 
 export async function updateAddress(customerId: string, id: string, input: Partial<AddressInput>) {
   await ensureOwned(customerId, id);
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(async (tx) => {
     if (input.isDefault) {
       await tx.address.updateMany({ where: { customerId }, data: { isDefault: false } });
     }

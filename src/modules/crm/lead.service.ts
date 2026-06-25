@@ -1,5 +1,5 @@
 import { ActivityType, LeadSource, LeadStage, Prisma } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { prisma, tenantTransaction } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 
 const leadInclude = {
@@ -156,7 +156,7 @@ export async function convertLead(id: string) {
     throw ApiError.conflict('A customer with this phone already exists');
   }
 
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(async (tx) => {
     const customer = await tx.customer.create({
       data: {
         shopName: lead.shopName,

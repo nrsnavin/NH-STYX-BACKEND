@@ -9,6 +9,7 @@ import { logger } from './config/logger';
 import apiRoutes from './routes';
 import { UPLOAD_DIR } from './modules/uploads/upload.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
+import { tenantContext } from './middlewares/tenantContext.middleware';
 
 export function createApp(): Application {
   const app = express();
@@ -55,7 +56,10 @@ export function createApp(): Application {
     }),
   );
 
-  // Versioned API.
+  // Bind the per-request tenant (customer) context for row-level security,
+  // then mount the versioned API. Must wrap the routes so the async context
+  // is active for every handler/Prisma call.
+  app.use(env.API_PREFIX, tenantContext);
   app.use(env.API_PREFIX, apiRoutes);
 
   // 404 + centralized error handling (must be last).

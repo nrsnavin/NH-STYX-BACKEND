@@ -7,7 +7,7 @@ import {
   Prisma,
   StockMovementType,
 } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { prisma, tenantTransaction } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
@@ -43,8 +43,12 @@ interface RazorpayCheckout {
 
 async function nextOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
   const year = new Date().getFullYear();
-  const count = await tx.order.count();
-  return `ORD-${year}-${String(count + 1).padStart(5, '0')}`;
+  // A Postgres sequence (migration `enable_rls`) gives a gap-free, race-free,
+  // and RLS-independent counter — a global `order.count()` would be wrong under
+  // a customer's row-level-security context (it would only see their orders).
+  const [{ nextval }] = await tx.$queryRaw<{ nextval: bigint }[]>`
+    SELECT nextval('order_number_seq')`;
+  return `ORD-${year}-${String(Number(nextval)).padStart(5, '0')}`;
 }
 
 function razorpayConfigured(): boolean {
@@ -245,7 +249,7 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
   // which a serverless DB (e.g. Neon) could reap the pooled connection, so the
   // transaction then failed and rolled back. Committing first — on a warm
   // connection, with generous timeouts — removes that race entirely.
-  const order = await prisma.$transaction(
+  const order = await tenantTransaction(
     async (tx) => {
       const orderNumber = await nextOrderNumber(tx);
 
@@ -531,7 +535,7 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
       : null;
   const receipt = `nhstyx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
-  const order = await prisma.$transaction(
+  const order = await tenantTransaction(
     async (tx) => {
       const orderNumber = await nextOrderNumber(tx);
       const created = await tx.order.create({
@@ -757,7 +761,7 @@ export async function updateOrderStatus(id: string, status: OrderStatus, actorId
   await prisma.order.findUniqueOrThrow({ where: { id } }).catch(() => {
     throw ApiError.notFound('Order not found');
   });
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(async (tx) => {
     const updated = await tx.order.update({ where: { id }, data: { status } });
     await recordOrderEvent(tx, id, status, { userId: actorId });
     return updated;
@@ -803,7 +807,7 @@ export async function recordPayment(
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) throw ApiError.notFound('Order not found');
 
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(async (tx) => {
     await tx.payment.create({
       data: {
         orderId,
@@ -842,7 +846,7 @@ export async function verifyRazorpay(
   }
   // When no secret is configured (dev/scaffold) the payment is accepted as-is.
 
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(async (tx) => {
     const intent = await tx.payment.findFirst({
       where: { orderId, method: PaymentMethod.RAZORPAY, status: PaymentStatus.CREATED },
       orderBy: { createdAt: 'desc' },

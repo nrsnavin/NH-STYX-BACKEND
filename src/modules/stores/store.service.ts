@@ -1,5 +1,5 @@
 import { Prisma, Role, StockMovementType } from '@prisma/client';
-import { prisma } from '../../lib/prisma';
+import { basePrisma, prisma, tenantTransaction } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { recordStockMovement } from '../../utils/ledger';
 import { normalizeCity } from '../../utils/storeContext';
@@ -178,7 +178,7 @@ export async function upsertStoreProduct(
   const product = await prisma.product.findUnique({ where: { id: productId } });
   if (!product) throw ApiError.notFound('Product not found');
 
-  return prisma.$transaction(async (tx) => {
+  return tenantTransaction(async (tx) => {
     const before = await tx.storeProduct.findUnique({
       where: { storeId_productId: { storeId, productId } },
       select: { stockQty: true },
@@ -287,7 +287,9 @@ export async function importInventory(storeId: string, csv: string, actorId?: st
     });
     const delta = newStock - (existing?.stockQty ?? 0);
     if (delta !== 0) {
-      await recordStockMovement(prisma, {
+      // Staff CSV path (no customer RLS context) — use the base client, which
+      // is assignable to TransactionClient. StockMovement isn't RLS-scoped.
+      await recordStockMovement(basePrisma, {
         storeId,
         productId: product.id,
         deltaQty: delta,
