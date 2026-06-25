@@ -12,6 +12,9 @@ import * as productController from './product.controller';
 const router = Router();
 
 router.get('/', authenticate, validate(listProductsSchema), productController.list);
+// Specific routes must precede the `/:id` param route.
+router.get('/best-selling', authenticate, productController.bestSelling);
+router.get('/recently-ordered', authenticate, productController.recentlyOrdered);
 router.get('/:id', authenticate, validate(productIdSchema), productController.getOne);
 
 router.post(

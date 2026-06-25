@@ -37,6 +37,36 @@ export const list = asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true, ...data });
 });
 
+/** Best sellers in the customer's store/city. Empty for staff / no store. */
+export const bestSelling = asyncHandler(async (req: Request, res: Response) => {
+  if (req.auth?.type !== 'CUSTOMER') {
+    res.json({ success: true, items: [] });
+    return;
+  }
+  const storeId = await getCustomerStoreId(req.auth.sub);
+  if (!storeId) {
+    res.json({ success: true, items: [] });
+    return;
+  }
+  const items = await productService.bestSellingForStore(storeId, 10);
+  res.json({ success: true, items });
+});
+
+/** Products the signed-in customer has ordered before (most recent first). */
+export const recentlyOrdered = asyncHandler(async (req: Request, res: Response) => {
+  if (req.auth?.type !== 'CUSTOMER') {
+    res.json({ success: true, items: [] });
+    return;
+  }
+  const storeId = await getCustomerStoreId(req.auth.sub);
+  if (!storeId) {
+    res.json({ success: true, items: [] });
+    return;
+  }
+  const items = await productService.recentlyOrderedForCustomer(req.auth.sub, storeId, 10);
+  res.json({ success: true, items });
+});
+
 export const getOne = asyncHandler(async (req: Request, res: Response) => {
   if (req.auth?.type === 'CUSTOMER') {
     const storeId = await getCustomerStoreId(req.auth.sub);

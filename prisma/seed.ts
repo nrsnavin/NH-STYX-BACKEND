@@ -183,6 +183,7 @@ async function main() {
     description: string;
     brand: string;
     categoryId: string;
+    tags?: string[];
     unit: ProductUnit;
     hsnCode: string;
     gstRatePercent: number;
@@ -199,13 +200,14 @@ async function main() {
   const catalog = (s: Seed) =>
     prisma.product.upsert({
       where: { slug: s.slug },
-      update: {},
+      update: { tags: s.tags ?? [] },
       create: {
         name: s.name,
         slug: s.slug,
         description: s.description,
         brand: s.brand,
         categoryId: s.categoryId,
+        tags: s.tags ?? [],
         unit: s.unit,
         hsnCode: s.hsnCode,
         gstRatePercent: s.gstRatePercent,
@@ -244,6 +246,7 @@ async function main() {
       description: 'Breathable cotton kurti — wholesale pack.',
       brand: 'NH Basics',
       categoryId: kurtis.id,
+      tags: ['cotton', 'kurti', 'women', 'ethnic', 'casual'],
       unit: ProductUnit.PIECE,
       hsnCode: '6109',
       gstRatePercent: 5,
@@ -263,6 +266,7 @@ async function main() {
       description: 'Trendy rayon tops, mixed prints.',
       brand: 'NH Basics',
       categoryId: kurtis.id,
+      tags: ['rayon', 'top', 'women', 'printed', 'casual'],
       unit: ProductUnit.PIECE,
       hsnCode: '6106',
       gstRatePercent: 5,
@@ -279,6 +283,7 @@ async function main() {
       description: 'Festive Banarasi silk sarees with blouse piece.',
       brand: 'NH Ethnics',
       categoryId: sarees.id,
+      tags: ['silk', 'saree', 'festive', 'banarasi', 'ethnic', 'wedding'],
       unit: ProductUnit.PIECE,
       hsnCode: '5007',
       gstRatePercent: 5,
@@ -295,6 +300,7 @@ async function main() {
       description: 'Wrinkle-free formal shirts, assorted sizes.',
       brand: 'NH Formals',
       categoryId: menswear.id,
+      tags: ['shirt', 'men', 'formal', 'office', 'menswear'],
       unit: ProductUnit.PACK,
       hsnCode: '6205',
       gstRatePercent: 5,

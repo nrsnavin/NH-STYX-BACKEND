@@ -272,6 +272,9 @@ model Product {
   slug        String?  @unique
   description String?
   brand       String?
+  // Free-form search tags (e.g. "festive", "cotton", "kids") for friendlier
+  // search beyond the product name.
+  tags        String[] @default([])
   categoryId  String
   category    Category @relation(fields: [categoryId], references: [id])
 

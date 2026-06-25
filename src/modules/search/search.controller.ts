@@ -19,6 +19,7 @@ export const ai = asyncHandler(async (req: Request, res: Response) => {
       reply: 'No store is linked to your account yet.',
       aiPowered: false,
       filters: { keywords: [], categorySlug: null, maxPricePaise: null, minQty: null },
+      categories: [],
       items: [],
     });
     return;

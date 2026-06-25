@@ -29,6 +29,7 @@ export function composeStoreProduct(sp: StoreProductWithTiers) {
     brand: p.brand,
     categoryId: p.categoryId,
     categoryName: p.category?.name ?? null,
+    tags: p.tags,
     unit: p.unit,
     hsnCode: p.hsnCode,
     gstRatePercent: p.gstRatePercent,
@@ -42,6 +43,24 @@ export function composeStoreProduct(sp: StoreProductWithTiers) {
     priceTiers: [...sp.priceTiers]
       .sort((a, b) => a.minQty - b.minQty)
       .map((t) => ({ minQty: t.minQty, pricePaise: t.pricePaise })),
+  };
+}
+
+/**
+ * Search filter over name + brand + tags. Tags (stored lower-case) make search
+ * friendlier — e.g. "festive" or "cotton" finds products tagged that way even
+ * when the word isn't in the name.
+ */
+function productSearchWhere(search?: string): Prisma.ProductWhereInput {
+  const q = search?.trim();
+  if (!q) return {};
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+  return {
+    OR: [
+      { name: { contains: q, mode: Prisma.QueryMode.insensitive } },
+      { brand: { contains: q, mode: Prisma.QueryMode.insensitive } },
+      { tags: { hasSome: tokens } },
+    ],
   };
 }
 
@@ -61,7 +80,7 @@ export async function listStoreProducts(params: StoreListParams) {
 
   const productWhere: Prisma.ProductWhereInput = {
     isActive: true,
-    ...(search ? { name: { contains: search, mode: Prisma.QueryMode.insensitive } } : {}),
+    ...productSearchWhere(search),
   };
 
   // Category filter is tree-aware: a parent includes its children.
@@ -110,6 +129,65 @@ export async function getStoreProduct(storeId: string, productId: string) {
   return composeStoreProduct(sp);
 }
 
+// ---- Home feed (best-selling / recently ordered) ----------------------------
+
+/** Compose the store view for a list of product ids, preserving their order
+ *  and dropping any the store no longer actively stocks. */
+async function storeProductsByIds(storeId: string, productIds: string[]) {
+  if (productIds.length === 0) return [];
+  const rows = await prisma.storeProduct.findMany({
+    where: {
+      storeId,
+      isActive: true,
+      productId: { in: productIds },
+      product: { isActive: true },
+    },
+    include: { product: { include: { category: true } }, priceTiers: true },
+  });
+  const byId = new Map(rows.map((r) => [r.productId, r]));
+  return productIds
+    .map((id) => byId.get(id))
+    .filter((r): r is StoreProductWithTiers => Boolean(r))
+    .map(composeStoreProduct);
+}
+
+/** Best sellers in a store/city — ranked by total quantity ordered there. */
+export async function bestSellingForStore(storeId: string, limit = 10) {
+  const grouped = await prisma.orderItem.groupBy({
+    by: ['productId'],
+    where: { order: { storeId } },
+    _sum: { quantity: true },
+    orderBy: { _sum: { quantity: 'desc' } },
+    take: limit * 2, // headroom: some may be unstocked/inactive and filtered out
+  });
+  const items = await storeProductsByIds(storeId, grouped.map((g) => g.productId));
+  return items.slice(0, limit);
+}
+
+/** Products this customer ordered before (most recent first, de-duplicated),
+ *  limited to what their store still stocks. */
+export async function recentlyOrderedForCustomer(
+  customerId: string,
+  storeId: string,
+  limit = 10,
+) {
+  const rows = await prisma.orderItem.findMany({
+    where: { order: { customerId } },
+    orderBy: { order: { createdAt: 'desc' } },
+    select: { productId: true },
+    take: 60,
+  });
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const r of rows) {
+    if (seen.has(r.productId)) continue;
+    seen.add(r.productId);
+    ids.push(r.productId);
+    if (ids.length >= limit) break;
+  }
+  return storeProductsByIds(storeId, ids);
+}
+
 // ---- Catalog management (admin) ---------------------------------------------
 
 interface CatalogListParams {
@@ -125,7 +203,7 @@ export async function listCatalog(params: CatalogListParams) {
   const { page, limit, search, categoryId, isActive } = params;
   const where: Prisma.ProductWhereInput = {
     ...(isActive !== undefined ? { isActive } : {}),
-    ...(search ? { name: { contains: search, mode: Prisma.QueryMode.insensitive } } : {}),
+    ...productSearchWhere(search),
   };
 
   if (categoryId) {
@@ -166,6 +244,7 @@ interface CreateProductInput {
   description?: string;
   brand?: string;
   categoryId: string;
+  tags?: string[];
   unit?: ProductUnit;
   hsnCode?: string;
   gstRatePercent?: number;
@@ -173,6 +252,17 @@ interface CreateProductInput {
   moqQty?: number;
   imageUrl?: string;
   isActive?: boolean;
+}
+
+/** Trim, lower-case and de-dupe tags so search (hasSome) is predictable. */
+function normalizeTags(tags?: string[]): string[] {
+  if (!tags) return [];
+  const seen = new Set<string>();
+  for (const t of tags) {
+    const n = t.trim().toLowerCase();
+    if (n) seen.add(n);
+  }
+  return [...seen];
 }
 
 export async function createProduct(input: CreateProductInput) {
@@ -183,6 +273,7 @@ export async function createProduct(input: CreateProductInput) {
       description: input.description,
       brand: input.brand,
       categoryId: input.categoryId,
+      tags: normalizeTags(input.tags),
       unit: input.unit ?? ProductUnit.PIECE,
       hsnCode: input.hsnCode,
       gstRatePercent: input.gstRatePercent ?? 0,
@@ -199,7 +290,7 @@ export async function updateProduct(
   id: string,
   input: Partial<CreateProductInput> & { mrpPaise?: number | null },
 ) {
-  const { name, categoryId, ...rest } = input;
+  const { name, categoryId, tags, ...rest } = input;
   const data: Prisma.ProductUpdateInput = {
     description: rest.description,
     brand: rest.brand,
@@ -211,6 +302,7 @@ export async function updateProduct(
     imageUrl: rest.imageUrl,
     isActive: rest.isActive,
   };
+  if (tags !== undefined) data.tags = normalizeTags(tags);
   if (name) {
     data.name = name;
     data.slug = slugify(`${name}-${Date.now().toString(36)}`);

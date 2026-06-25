@@ -113,7 +113,10 @@ async function aiInterpret(
 
 /** Store-scoped natural-language search: results come from the customer's store. */
 export async function aiSearch(storeId: string, query: string) {
-  const categories = await prisma.category.findMany({ select: { name: true, slug: true } });
+  const categories = await prisma.category.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true, slug: true, imageUrl: true },
+  });
 
   let interpretation: Interpretation;
   if (env.ANTHROPIC_API_KEY) {
@@ -142,11 +145,15 @@ export async function aiSearch(storeId: string, query: string) {
     }
   }
   if (keywords.length) {
-    productWhere.OR = keywords.flatMap((k) => [
-      { name: { contains: k, mode: Prisma.QueryMode.insensitive } },
-      { brand: { contains: k, mode: Prisma.QueryMode.insensitive } },
-      { description: { contains: k, mode: Prisma.QueryMode.insensitive } },
-    ]);
+    productWhere.OR = [
+      ...keywords.flatMap((k) => [
+        { name: { contains: k, mode: Prisma.QueryMode.insensitive } },
+        { brand: { contains: k, mode: Prisma.QueryMode.insensitive } },
+        { description: { contains: k, mode: Prisma.QueryMode.insensitive } },
+      ]),
+      // Tags make search friendlier (e.g. "festive", "cotton").
+      { tags: { hasSome: keywords.map((k) => k.toLowerCase()) } },
+    ];
   }
 
   // Search only what the customer's store stocks; price filter uses store price.
@@ -164,10 +171,24 @@ export async function aiSearch(storeId: string, query: string) {
     orderBy: { createdAt: 'desc' },
   });
 
+  // Categories matching the query/keywords, so the UI can offer them as chips.
+  const ql = query.toLowerCase();
+  const kw = keywords.map((k) => k.toLowerCase());
+  const matchedCategories = categories
+    .filter((c) => {
+      const n = c.name.toLowerCase();
+      if (categorySlug && c.slug === categorySlug) return true;
+      if (ql.includes(n)) return true;
+      return kw.some((k) => n.includes(k) || k.includes(n));
+    })
+    .slice(0, 8)
+    .map((c) => ({ id: c.id, name: c.name, slug: c.slug, imageUrl: c.imageUrl ?? null }));
+
   return {
     reply: interpretation.reply,
     aiPowered: interpretation.aiPowered,
     filters: interpretation.filters,
+    categories: matchedCategories,
     items: rows.map(composeStoreProduct),
   };
 }
