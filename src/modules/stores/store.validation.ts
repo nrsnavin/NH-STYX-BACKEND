@@ -61,6 +61,15 @@ export const listInventorySchema = z.object({
   }),
 });
 
+export const listMovementsSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  query: z.object({
+    productId: z.string().uuid().optional(),
+    page: z.coerce.number().int().positive().default(1),
+    limit: z.coerce.number().int().positive().max(200).default(50),
+  }),
+});
+
 export const upsertStoreProductSchema = z.object({
   params: z.object({ id: z.string().uuid(), productId: z.string().uuid() }),
   body: z.object({

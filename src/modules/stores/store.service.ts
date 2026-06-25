@@ -1,6 +1,7 @@
-import { Prisma, Role } from '@prisma/client';
+import { Prisma, Role, StockMovementType } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
+import { recordStockMovement } from '../../utils/ledger';
 import { normalizeCity } from '../../utils/storeContext';
 
 // ---- Stores -----------------------------------------------------------------
@@ -172,11 +173,18 @@ export async function upsertStoreProduct(
   storeId: string,
   productId: string,
   input: UpsertStoreProductInput,
+  actorId?: string,
 ) {
   const product = await prisma.product.findUnique({ where: { id: productId } });
   if (!product) throw ApiError.notFound('Product not found');
 
   return prisma.$transaction(async (tx) => {
+    const before = await tx.storeProduct.findUnique({
+      where: { storeId_productId: { storeId, productId } },
+      select: { stockQty: true },
+    });
+    const oldStock = before?.stockQty ?? 0;
+
     const sp = await tx.storeProduct.upsert({
       where: { storeId_productId: { storeId, productId } },
       create: {
@@ -194,6 +202,19 @@ export async function upsertStoreProduct(
         isActive: input.isActive,
       },
     });
+
+    // Ledger the stock change (manual edits show as RESTOCK / ADJUSTMENT).
+    const delta = sp.stockQty - oldStock;
+    if (delta !== 0) {
+      await recordStockMovement(tx, {
+        storeId,
+        productId,
+        deltaQty: delta,
+        type: delta > 0 ? StockMovementType.RESTOCK : StockMovementType.ADJUSTMENT,
+        userId: actorId,
+        reason: 'Manual stock update',
+      });
+    }
 
     if (input.priceTiers) {
       await tx.storePriceTier.deleteMany({ where: { storeProductId: sp.id } });
@@ -219,7 +240,7 @@ export async function upsertStoreProduct(
  * Bulk-imports a store's price + stock from a CSV. Columns: slug (or name),
  * price (in rupees), stock. Matches catalog products and upserts StoreProducts.
  */
-export async function importInventory(storeId: string, csv: string) {
+export async function importInventory(storeId: string, csv: string, actorId?: string) {
   const lines = csv.split(/\r?\n/).filter((l) => l.trim());
   if (lines.length < 2) throw ApiError.badRequest('CSV has no data rows');
 
@@ -258,15 +279,61 @@ export async function importInventory(storeId: string, csv: string) {
     const existing = await prisma.storeProduct.findUnique({
       where: { storeId_productId: { storeId, productId: product.id } },
     });
+    const newStock = Math.round(stock);
     await prisma.storeProduct.upsert({
       where: { storeId_productId: { storeId, productId: product.id } },
-      create: { storeId, productId: product.id, pricePaise: Math.round(price * 100), stockQty: Math.round(stock) },
-      update: { pricePaise: Math.round(price * 100), stockQty: Math.round(stock) },
+      create: { storeId, productId: product.id, pricePaise: Math.round(price * 100), stockQty: newStock },
+      update: { pricePaise: Math.round(price * 100), stockQty: newStock },
     });
+    const delta = newStock - (existing?.stockQty ?? 0);
+    if (delta !== 0) {
+      await recordStockMovement(prisma, {
+        storeId,
+        productId: product.id,
+        deltaQty: delta,
+        type: StockMovementType.ADJUSTMENT,
+        userId: actorId,
+        reason: 'CSV import',
+      });
+    }
     if (existing) result.updated++;
     else result.created++;
   }
   return result;
+}
+
+/** The stock movement ledger for a store (optionally one product). */
+export async function listStockMovements(
+  storeId: string,
+  params: { productId?: string; page: number; limit: number },
+) {
+  const where: Prisma.StockMovementWhereInput = {
+    storeId,
+    ...(params.productId ? { productId: params.productId } : {}),
+  };
+  const [items, total] = await Promise.all([
+    prisma.stockMovement.findMany({
+      where,
+      include: {
+        product: { select: { id: true, name: true } },
+        user: { select: { name: true } },
+        order: { select: { orderNumber: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (params.page - 1) * params.limit,
+      take: params.limit,
+    }),
+    prisma.stockMovement.count({ where }),
+  ]);
+  return {
+    items,
+    pagination: {
+      page: params.page,
+      limit: params.limit,
+      total,
+      totalPages: Math.ceil(total / params.limit),
+    },
+  };
 }
 
 export async function removeStoreProduct(storeId: string, productId: string) {

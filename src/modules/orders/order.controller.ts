@@ -50,7 +50,7 @@ export const getOne = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const updateStatus = asyncHandler(async (req: Request, res: Response) => {
-  const data = await orderService.updateOrderStatus(req.params.id, req.body.status);
+  const data = await orderService.updateOrderStatus(req.params.id, req.body.status, req.auth!.sub);
   res.json({ success: true, data });
 });
 

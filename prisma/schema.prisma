@@ -130,6 +130,8 @@ model User {
 
   assignedLeads      Lead[]     @relation("LeadAssignee")
   authoredActivities Activity[] @relation("ActivityAuthor")
+  stockMovements     StockMovement[]
+  orderEvents        OrderEvent[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -202,12 +204,13 @@ model Store {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  serviceAreas ServiceArea[]
-  agents       User[]
-  customers    Customer[]
-  inventory    StoreProduct[]
-  orders       Order[]
-  leads        Lead[]
+  serviceAreas   ServiceArea[]
+  agents         User[]
+  customers      Customer[]
+  inventory      StoreProduct[]
+  orders         Order[]
+  leads          Lead[]
+  stockMovements StockMovement[]
 
   @@index([stateCode])
 }
@@ -292,9 +295,10 @@ model Product {
 
   // Price & stock are PER-STORE — see StoreProduct. Product is the shared
   // catalog definition (name, category, HSN, GST rate, MOQ, image).
-  storeProducts StoreProduct[]
-  cartItems     CartItem[]
-  orderItems    OrderItem[]
+  storeProducts  StoreProduct[]
+  cartItems      CartItem[]
+  orderItems     OrderItem[]
+  stockMovements StockMovement[]
 
   @@index([categoryId])
 }
@@ -418,8 +422,10 @@ model Order {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  items    OrderItem[]
-  payments Payment[] // multiple allowed (partial / credit settlements)
+  items          OrderItem[]
+  payments       Payment[] // multiple allowed (partial / credit settlements)
+  events         OrderEvent[] // status-change history (placed/confirmed/shipped…)
+  stockMovements StockMovement[]
 
   @@index([customerId])
   @@index([storeId])
@@ -536,4 +542,51 @@ model Activity {
   @@index([leadId])
   @@index([customerId])
   @@index([createdById])
+}
+
+// ------------------------------------------------------------
+//  Inventory ledger & order events (audit / traceability)
+// ------------------------------------------------------------
+
+enum StockMovementType {
+  SALE // consumed by an order
+  RESTOCK // stock added
+  ADJUSTMENT // manual correction / CSV import
+  RELEASE // returned to stock (cancellation / return)
+}
+
+// Append-only ledger of every per-store stock change — who/when/why, so stock
+// is fully traceable rather than a single mutable number.
+model StockMovement {
+  id        String            @id @default(uuid())
+  storeId   String
+  store     Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  deltaQty  Int // signed: negative = consumed, positive = added
+  type      StockMovementType
+  reason    String?
+  orderId   String?
+  order     Order?            @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  userId    String? // staff who triggered it, if any
+  user      User?             @relation(fields: [userId], references: [id])
+  createdAt DateTime          @default(now())
+
+  @@index([storeId, productId])
+  @@index([orderId])
+}
+
+// Status-change history for an order (placed, confirmed, packed, shipped,
+// delivered…) — gives each event a timestamp and the staff member responsible.
+model OrderEvent {
+  id        String      @id @default(uuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    OrderStatus
+  note      String?
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id])
+  createdAt DateTime    @default(now())
+
+  @@index([orderId])
 }

@@ -72,7 +72,12 @@ export const inventory = asyncHandler(async (req: Request, res: Response) => {
 
 export const upsertProduct = asyncHandler(async (req: Request, res: Response) => {
   await assertStoreScope(req, req.params.id);
-  const data = await storeService.upsertStoreProduct(req.params.id, req.params.productId, req.body);
+  const data = await storeService.upsertStoreProduct(
+    req.params.id,
+    req.params.productId,
+    req.body,
+    req.auth?.sub,
+  );
   res.json({ success: true, data });
 });
 
@@ -82,10 +87,25 @@ export const removeProduct = asyncHandler(async (req: Request, res: Response) =>
   res.json({ success: true, message: 'Product removed from store' });
 });
 
+export const movements = asyncHandler(async (req: Request, res: Response) => {
+  await assertStoreScope(req, req.params.id);
+  const { productId, page, limit } = req.query as unknown as {
+    productId?: string;
+    page: number;
+    limit: number;
+  };
+  const data = await storeService.listStockMovements(req.params.id, { productId, page, limit });
+  res.json({ success: true, ...data });
+});
+
 export const importInventory = asyncHandler(async (req: Request, res: Response) => {
   await assertStoreScope(req, req.params.id);
   if (!req.file) throw ApiError.badRequest('Upload a CSV file (field "file")');
-  const data = await storeService.importInventory(req.params.id, req.file.buffer.toString('utf-8'));
+  const data = await storeService.importInventory(
+    req.params.id,
+    req.file.buffer.toString('utf-8'),
+    req.auth?.sub,
+  );
   res.json({ success: true, data });
 });
 

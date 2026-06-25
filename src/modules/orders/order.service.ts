@@ -5,12 +5,14 @@ import {
   PaymentMethod,
   PaymentStatus,
   Prisma,
+  StockMovementType,
 } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { computeLineTax, isIntraState, resolveUnitPrice } from '../../utils/pricing';
+import { recordOrderEvent, recordStockMovement } from '../../utils/ledger';
 import { getStaffStoreId } from '../../utils/storeContext';
 
 const RAZORPAY_CURRENCY = 'INR';
@@ -284,6 +286,8 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       // consume stock and empty the cart now. RAZORPAY defers BOTH until the
       // payment is verified (see verifyRazorpay) — otherwise a cancelled or
       // failed payment would lose the customer's cart and silently eat stock.
+      await recordOrderEvent(tx, order.id, OrderStatus.PENDING, { note: 'Order placed' });
+
       if (input.paymentMethod !== PaymentMethod.RAZORPAY) {
         // Conditional decrement guards against overselling under concurrency.
         for (const item of cart.items) {
@@ -294,6 +298,13 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
           if (dec.count !== 1) {
             throw ApiError.badRequest(`${item.product.name} just went out of stock`);
           }
+          await recordStockMovement(tx, {
+            storeId: store.id,
+            productId: item.productId,
+            deltaQty: -item.quantity,
+            type: StockMovementType.SALE,
+            orderId: order.id,
+          });
         }
         await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
       }
@@ -556,6 +567,11 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
         include: { items: true },
       });
 
+      await recordOrderEvent(tx, created.id, OrderStatus.PENDING, {
+        note: 'Order placed by staff',
+        userId: staffSub,
+      });
+
       // Non-online orders consume stock immediately; RAZORPAY defers to payment.
       // Conditional decrement (stockQty >= qty) prevents overselling under
       // concurrent orders — if it doesn't update exactly one row, we roll back.
@@ -568,6 +584,14 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
           if (dec.count !== 1) {
             throw ApiError.badRequest(`${item.productName} just went out of stock`);
           }
+          await recordStockMovement(tx, {
+            storeId: store.id,
+            productId: item.productId,
+            deltaQty: -item.quantity,
+            type: StockMovementType.SALE,
+            orderId: created.id,
+            userId: staffSub,
+          });
         }
       }
       if (input.paymentMethod === PaymentMethod.RAZORPAY) {
@@ -710,6 +734,7 @@ export async function getOrder(
     include: {
       items: true,
       payments: true,
+      events: { orderBy: { createdAt: 'asc' }, include: { user: { select: { name: true } } } },
       customer: { select: { shopName: true, phone: true, gstin: true } },
       store: { select: { id: true, name: true, city: true } },
     },
@@ -728,11 +753,15 @@ export async function getOrder(
   return order;
 }
 
-export async function updateOrderStatus(id: string, status: OrderStatus) {
+export async function updateOrderStatus(id: string, status: OrderStatus, actorId?: string) {
   await prisma.order.findUniqueOrThrow({ where: { id } }).catch(() => {
     throw ApiError.notFound('Order not found');
   });
-  return prisma.order.update({ where: { id }, data: { status } });
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.order.update({ where: { id }, data: { status } });
+    await recordOrderEvent(tx, id, status, { userId: actorId });
+    return updated;
+  });
 }
 
 /** Recompute amountPaid/Due + paymentStatus from PAID payments; auto-confirm. */
@@ -754,6 +783,10 @@ async function recompute(tx: Prisma.TransactionClient, orderId: string) {
     paymentStatus === OrderPaymentStatus.PAID && order.status === OrderStatus.PENDING
       ? OrderStatus.CONFIRMED
       : order.status;
+
+  if (status === OrderStatus.CONFIRMED && order.status === OrderStatus.PENDING) {
+    await recordOrderEvent(tx, orderId, OrderStatus.CONFIRMED, { note: 'Payment confirmed' });
+  }
 
   return tx.order.update({
     where: { id: orderId },
@@ -841,6 +874,14 @@ export async function verifyRazorpay(
         await tx.storeProduct.updateMany({
           where: { storeId: order.storeId, productId: item.productId },
           data: { stockQty: { decrement: item.quantity } },
+        });
+        await recordStockMovement(tx, {
+          storeId: order.storeId,
+          productId: item.productId,
+          deltaQty: -item.quantity,
+          type: StockMovementType.SALE,
+          orderId: order.id,
+          reason: 'Razorpay payment confirmed',
         });
       }
     }

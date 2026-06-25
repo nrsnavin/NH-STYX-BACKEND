@@ -9,6 +9,7 @@ import {
   assignAgentSchema,
   createStoreSchema,
   listInventorySchema,
+  listMovementsSchema,
   listStoresSchema,
   storeIdSchema,
   storeProductIdSchema,
@@ -40,6 +41,8 @@ router.delete('/areas/:areaId', authenticate, authorize('ADMIN'), validate(areaI
 
 // Inventory (per-store price + stock) — admin or the store's own agent
 router.get('/:id/inventory', authenticate, authorize('ADMIN', 'AGENT'), validate(listInventorySchema), storeController.inventory);
+// Stock movement ledger (audit / traceability).
+router.get('/:id/movements', authenticate, authorize('ADMIN', 'AGENT'), validate(listMovementsSchema), storeController.movements);
 router.post(
   '/:id/inventory/import',
   authenticate,
