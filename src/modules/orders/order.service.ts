@@ -280,16 +280,19 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
         include: { items: true },
       });
 
-      // Decrement per-store stock.
-      for (const item of cart.items) {
-        await tx.storeProduct.update({
-          where: { storeId_productId: { storeId: store.id, productId: item.productId } },
-          data: { stockQty: { decrement: item.quantity } },
-        });
+      // For non-online methods the order is final the moment it's placed, so
+      // consume stock and empty the cart now. RAZORPAY defers BOTH until the
+      // payment is verified (see verifyRazorpay) — otherwise a cancelled or
+      // failed payment would lose the customer's cart and silently eat stock.
+      if (input.paymentMethod !== PaymentMethod.RAZORPAY) {
+        for (const item of cart.items) {
+          await tx.storeProduct.update({
+            where: { storeId_productId: { storeId: store.id, productId: item.productId } },
+            data: { stockQty: { decrement: item.quantity } },
+          });
+        }
+        await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
       }
-
-      // Empty the cart.
-      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
 
       // Open a payment intent. The Razorpay order id is attached AFTER commit.
       if (input.paymentMethod === PaymentMethod.RAZORPAY) {
@@ -491,7 +494,10 @@ export async function verifyRazorpay(
   orderId: string,
   input: { razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string },
 ) {
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: true },
+  });
   if (!order) throw ApiError.notFound('Order not found');
   if (order.customerId !== customerId) throw ApiError.forbidden('You cannot pay for this order');
 
@@ -527,6 +533,21 @@ export async function verifyRazorpay(
         razorpaySignature: input.razorpaySignature,
       },
     });
+
+    // Payment confirmed — NOW consume stock and empty the cart. We deferred
+    // both from checkout so an abandoned/failed payment left them untouched.
+    // Guarded by the CREATED→PAID intent transition above, so this runs once.
+    if (order.storeId) {
+      for (const item of order.items) {
+        await tx.storeProduct.updateMany({
+          where: { storeId: order.storeId, productId: item.productId },
+          data: { stockQty: { decrement: item.quantity } },
+        });
+      }
+    }
+    const cart = await tx.cart.findUnique({ where: { customerId } });
+    if (cart) await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+
     return recompute(tx, orderId);
   });
 }
