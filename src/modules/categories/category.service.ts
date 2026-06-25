@@ -5,8 +5,8 @@ import { slugify } from '../../utils/slug';
 
 export async function listCategories() {
   return prisma.category.findMany({
-    where: { parentId: null },
-    include: { children: { orderBy: { sortOrder: 'asc' } } },
+    where: { parentId: null, isActive: true },
+    include: { children: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } },
     orderBy: { sortOrder: 'asc' },
   });
 }
@@ -65,5 +65,8 @@ export async function updateCategory(
 }
 
 export async function deleteCategory(id: string) {
-  await prisma.category.delete({ where: { id } });
+  // Soft delete — keeps the taxonomy/history intact; isActive filters hide it.
+  await prisma.category.update({ where: { id }, data: { isActive: false } }).catch(() => {
+    throw ApiError.notFound('Category not found');
+  });
 }

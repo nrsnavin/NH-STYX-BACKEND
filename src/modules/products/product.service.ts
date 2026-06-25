@@ -313,5 +313,8 @@ export async function updateProduct(
 }
 
 export async function deleteProduct(id: string) {
-  await prisma.product.delete({ where: { id } });
+  // Soft delete — preserves order/cart references; isActive filters hide it.
+  await prisma.product.update({ where: { id }, data: { isActive: false } }).catch(() => {
+    throw ApiError.notFound('Product not found');
+  });
 }

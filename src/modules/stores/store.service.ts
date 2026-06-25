@@ -337,8 +337,9 @@ export async function listStockMovements(
 }
 
 export async function removeStoreProduct(storeId: string, productId: string) {
+  // Soft delete (delist) — keeps the row + its ledger history.
   await prisma.storeProduct
-    .delete({ where: { storeId_productId: { storeId, productId } } })
+    .update({ where: { storeId_productId: { storeId, productId } }, data: { isActive: false } })
     .catch(() => {
       throw ApiError.notFound('This product is not stocked in the store');
     });

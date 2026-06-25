@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { OrderStatus } from '@prisma/client';
 import { asyncHandler } from '../../utils/asyncHandler';
+import { audit } from '../../utils/audit';
 import * as orderService from './order.service';
 import { streamInvoice } from './invoice.service';
 
@@ -12,6 +13,14 @@ export const create = asyncHandler(async (req: Request, res: Response) => {
 // Agent/admin places an order on behalf of a customer (phoned-in bulk order).
 export const createForCustomer = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.createStaffOrder(req.auth!.sub, req.body);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'order.staff_create',
+    entity: 'Order',
+    entityId: data.order.id,
+    meta: { customerId: req.body.customerId, paymentMethod: req.body.paymentMethod },
+  });
   res.status(201).json({ success: true, data });
 });
 
@@ -51,11 +60,27 @@ export const getOne = asyncHandler(async (req: Request, res: Response) => {
 
 export const updateStatus = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.updateOrderStatus(req.params.id, req.body.status, req.auth!.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'order.status',
+    entity: 'Order',
+    entityId: req.params.id,
+    meta: { status: req.body.status },
+  });
   res.json({ success: true, data });
 });
 
 export const recordPayment = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.recordPayment(req.params.id, req.body);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'payment.record',
+    entity: 'Order',
+    entityId: req.params.id,
+    meta: { method: req.body.method, amountPaise: req.body.amountPaise },
+  });
   res.status(201).json({ success: true, data });
 });
 

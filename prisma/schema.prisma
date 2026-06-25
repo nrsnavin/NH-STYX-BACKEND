@@ -590,3 +590,21 @@ model OrderEvent {
 
   @@index([orderId])
 }
+
+// Centralised audit trail of important actions (who did what, to what, when).
+// Decoupled from other tables (loose actorId/entityId) so it can log anything,
+// including SYSTEM actions, without cascade concerns.
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorType String // STAFF | CUSTOMER | SYSTEM
+  actorId   String?
+  action    String // e.g. customer.approve, order.status, product.delete
+  entity    String // Customer | Order | Product | Category | Store | Payment
+  entityId  String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}

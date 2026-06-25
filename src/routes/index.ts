@@ -13,6 +13,7 @@ import uploadRoutes from '../modules/uploads/upload.routes';
 import crmRoutes from '../modules/crm/lead.routes';
 import statsRoutes from '../modules/stats/stats.routes';
 import userRoutes from '../modules/users/user.routes';
+import auditRoutes from '../modules/audit/audit.routes';
 
 const router = Router();
 
@@ -46,5 +47,6 @@ router.use('/uploads', uploadRoutes);
 router.use('/crm', crmRoutes);
 router.use('/stats', statsRoutes);
 router.use('/users', userRoutes);
+router.use('/audit', auditRoutes);
 
 export default router;

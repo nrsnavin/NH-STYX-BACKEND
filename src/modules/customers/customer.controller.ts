@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { CustomerStatus } from '@prisma/client';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
+import { audit } from '../../utils/audit';
 import { getStaffStoreId } from '../../utils/storeContext';
 import * as customerService from './customer.service';
 
@@ -32,12 +33,28 @@ export const update = asyncHandler(async (req: Request, res: Response) => {
 export const approve = asyncHandler(async (req: Request, res: Response) => {
   await assertOwnStoreCustomer(req, req.params.id);
   const data = await customerService.approveCustomer(req.params.id, req.auth!.sub, req.body ?? {});
+  await audit({
+    actorType: 'STAFF',
+    actorId: req.auth!.sub,
+    action: 'customer.approve',
+    entity: 'Customer',
+    entityId: req.params.id,
+    meta: { creditApproved: req.body?.creditApproved, creditLimitPaise: req.body?.creditLimitPaise },
+  });
   res.json({ success: true, data });
 });
 
 export const reject = asyncHandler(async (req: Request, res: Response) => {
   await assertOwnStoreCustomer(req, req.params.id);
   const data = await customerService.rejectCustomer(req.params.id, req.auth!.sub, req.body?.reason);
+  await audit({
+    actorType: 'STAFF',
+    actorId: req.auth!.sub,
+    action: 'customer.reject',
+    entity: 'Customer',
+    entityId: req.params.id,
+    meta: { reason: req.body?.reason },
+  });
   res.json({ success: true, data });
 });
 
