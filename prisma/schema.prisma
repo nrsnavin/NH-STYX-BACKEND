@@ -172,12 +172,13 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  addresses  Address[]
-  cart       Cart?
-  orders     Order[]
-  lead       Lead?
-  activities Activity[]
-  wishlist   WishlistItem[]
+  addresses         Address[]
+  cart              Cart?
+  orders            Order[]
+  lead              Lead?
+  activities        Activity[]
+  wishlist          WishlistItem[]
+  couponRedemptions CouponRedemption[]
 
   @@index([phone])
   @@index([storeId])
@@ -212,6 +213,7 @@ model Store {
   orders         Order[]
   leads          Lead[]
   stockMovements StockMovement[]
+  coupons        Coupon[]
 
   @@index([stateCode])
 }
@@ -403,8 +405,9 @@ model Order {
 
   // ---- Money (all integer paise) ----
   subtotalPaise Int // sum of line subtotals, pre-tax
-  discountPaise Int @default(0)
-  deliveryPaise Int @default(0)
+  discountPaise Int     @default(0) // coupon discount (post-tax rebate)
+  couponCode    String? // code applied at checkout, if any
+  deliveryPaise Int     @default(0)
   cgstPaise     Int @default(0)
   sgstPaise     Int @default(0)
   igstPaise     Int @default(0)
@@ -424,10 +427,11 @@ model Order {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  items          OrderItem[]
-  payments       Payment[] // multiple allowed (partial / credit settlements)
-  events         OrderEvent[] // status-change history (placed/confirmed/shipped…)
-  stockMovements StockMovement[]
+  items            OrderItem[]
+  payments         Payment[] // multiple allowed (partial / credit settlements)
+  events           OrderEvent[] // status-change history (placed/confirmed/shipped…)
+  stockMovements   StockMovement[]
+  couponRedemption CouponRedemption?
 
   @@index([customerId])
   @@index([storeId])
@@ -628,4 +632,61 @@ model WishlistItem {
   @@unique([customerId, productId])
   @@index([customerId])
   @@index([productId])
+}
+
+// ------------------------------------------------------------
+//  Coupons & discounts
+// ------------------------------------------------------------
+
+enum CouponType {
+  PERCENT // value = whole percent off the order subtotal (e.g. 10 = 10%)
+  FIXED // value = flat paise off
+}
+
+// A promotional discount code. Applied post-tax to the order total (a rebate
+// on the payable amount), so per-line GST is unaffected.
+model Coupon {
+  id          String     @id @default(uuid())
+  code        String     @unique // stored upper-cased
+  description String?
+  type        CouponType
+  value       Int // PERCENT: whole percent; FIXED: paise
+
+  minOrderPaise    Int  @default(0) // minimum subtotal to qualify
+  maxDiscountPaise Int? // cap for PERCENT coupons
+  usageLimit       Int? // total redemptions allowed across all customers
+  perCustomerLimit Int? // redemptions allowed per customer
+  usedCount        Int  @default(0)
+
+  startsAt DateTime?
+  endsAt   DateTime?
+  isActive Boolean   @default(true)
+
+  // Optional restriction to a single store's customers.
+  storeId String?
+  store   Store?  @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  redemptions CouponRedemption[]
+
+  @@index([code])
+  @@index([isActive])
+}
+
+// One row per successful application of a coupon to an order (drives usage
+// limits and gives an audit trail of who redeemed what).
+model CouponRedemption {
+  id            String   @id @default(uuid())
+  couponId      String
+  coupon        Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  orderId       String   @unique
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  discountPaise Int
+  createdAt     DateTime @default(now())
+
+  @@index([couponId])
+  @@index([customerId])
 }

@@ -15,6 +15,7 @@ import statsRoutes from '../modules/stats/stats.routes';
 import userRoutes from '../modules/users/user.routes';
 import auditRoutes from '../modules/audit/audit.routes';
 import wishlistRoutes from '../modules/wishlist/wishlist.routes';
+import couponRoutes from '../modules/coupons/coupon.routes';
 
 const router = Router();
 
@@ -50,5 +51,6 @@ router.use('/stats', statsRoutes);
 router.use('/users', userRoutes);
 router.use('/audit', auditRoutes);
 router.use('/wishlist', wishlistRoutes);
+router.use('/coupons', couponRoutes);
 
 export default router;

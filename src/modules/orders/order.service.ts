@@ -14,6 +14,7 @@ import { logger } from '../../config/logger';
 import { computeLineTax, isIntraState, resolveUnitPrice } from '../../utils/pricing';
 import { recordOrderEvent, recordStockMovement } from '../../utils/ledger';
 import { getStaffStoreId } from '../../utils/storeContext';
+import * as couponService from '../coupons/coupon.service';
 
 const RAZORPAY_CURRENCY = 'INR';
 
@@ -124,6 +125,8 @@ interface CreateOrderInput {
   notes?: string;
   // Customer-supplied transfer reference (UTR / txn id) for BANK_TRANSFER.
   bankReference?: string;
+  // Optional promo code applied to the order.
+  couponCode?: string;
 }
 
 /** Checkout: turns the customer's cart into a GST-computed order. */
@@ -205,7 +208,21 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
   });
 
   const deliveryPaise = env.DELIVERY_FEE_PAISE;
-  const discountPaise = 0;
+
+  // Apply a coupon (post-tax rebate on the payable amount) if one was given.
+  let discountPaise = 0;
+  let appliedCoupon: { id: string; code: string } | null = null;
+  if (input.couponCode?.trim()) {
+    const result = await couponService.validateCoupon({
+      code: input.couponCode,
+      customerId,
+      storeId: store.id,
+      subtotalPaise,
+    });
+    discountPaise = result.discountPaise;
+    appliedCoupon = { id: result.coupon.id, code: result.coupon.code };
+  }
+
   const totalPaise = subtotalPaise + cgstTotal + sgstTotal + igstTotal + deliveryPaise - discountPaise;
 
   // Payment-method specifics. COD is not offered.
@@ -271,6 +288,7 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
           sellerStateCode: store.stateCode,
           subtotalPaise,
           discountPaise,
+          couponCode: appliedCoupon?.code ?? null,
           deliveryPaise,
           cgstPaise: cgstTotal,
           sgstPaise: sgstTotal,
@@ -291,6 +309,10 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       // payment is verified (see verifyRazorpay) — otherwise a cancelled or
       // failed payment would lose the customer's cart and silently eat stock.
       await recordOrderEvent(tx, order.id, OrderStatus.PENDING, { note: 'Order placed' });
+
+      if (appliedCoupon) {
+        await couponService.redeem(tx, appliedCoupon.id, customerId, order.id, discountPaise);
+      }
 
       if (input.paymentMethod !== PaymentMethod.RAZORPAY) {
         // Conditional decrement guards against overselling under concurrency.

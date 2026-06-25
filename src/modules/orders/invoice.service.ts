@@ -111,6 +111,9 @@ export async function streamInvoice(
     label('IGST', rs(order.igstPaise));
   }
   if (order.deliveryPaise > 0) label('Delivery', rs(order.deliveryPaise));
+  if (order.discountPaise > 0) {
+    label(order.couponCode ? `Discount (${order.couponCode})` : 'Discount', `- ${rs(order.discountPaise)}`);
+  }
   doc.moveDown(0.2);
   label('Grand Total', rs(order.totalPaise), true);
 

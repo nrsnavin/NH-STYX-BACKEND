@@ -8,6 +8,7 @@ export const createOrderSchema = z.object({
     paymentMethod: z.enum(['RAZORPAY', 'CREDIT', 'BANK_TRANSFER']),
     notes: z.string().max(500).optional(),
     bankReference: z.string().max(120).optional(),
+    couponCode: z.string().max(40).optional(),
   }),
 });
 
