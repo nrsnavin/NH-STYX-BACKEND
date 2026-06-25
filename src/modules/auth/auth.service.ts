@@ -6,7 +6,9 @@ import { findStoreForCity } from '../../utils/storeContext';
 import { createSignupLead } from '../crm/lead.service';
 
 // Store summary shown to a shop owner ("Shipped from …, <city>").
-const storeSelect = { select: { id: true, name: true, city: true, code: true } } as const;
+const storeSelect = {
+  select: { id: true, name: true, city: true, code: true, phone: true },
+} as const;
 
 // --- Staff (internal team) ---------------------------------------------------
 

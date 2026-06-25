@@ -18,7 +18,7 @@ const publicSelect = {
   rejectionReason: true,
   createdAt: true,
   storeId: true,
-  store: { select: { id: true, name: true, city: true, code: true } },
+  store: { select: { id: true, name: true, city: true, code: true, phone: true } },
 } satisfies Prisma.CustomerSelect;
 
 export async function listCustomers(params: {

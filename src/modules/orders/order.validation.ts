@@ -11,6 +11,20 @@ export const createOrderSchema = z.object({
   }),
 });
 
+/** Agent/admin places an order on behalf of a customer from explicit items. */
+export const staffOrderSchema = z.object({
+  body: z.object({
+    customerId: z.string().uuid(),
+    addressId: z.string().uuid().optional(),
+    paymentMethod: z.enum(['RAZORPAY', 'CREDIT', 'BANK_TRANSFER']),
+    items: z
+      .array(z.object({ productId: z.string().uuid(), quantity: z.number().int().positive() }))
+      .min(1, 'Add at least one item'),
+    notes: z.string().max(500).optional(),
+    bankReference: z.string().max(120).optional(),
+  }),
+});
+
 export const listOrdersSchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),

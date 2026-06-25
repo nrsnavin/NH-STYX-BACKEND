@@ -9,6 +9,21 @@ export const create = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json({ success: true, data });
 });
 
+// Agent/admin places an order on behalf of a customer (phoned-in bulk order).
+export const createForCustomer = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.createStaffOrder(req.auth!.sub, req.body);
+  res.status(201).json({ success: true, data });
+});
+
+// (Re)issue a Razorpay checkout for an existing unpaid online order (pay-now).
+export const payRazorpay = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.reissueRazorpay(
+    { sub: req.auth!.sub, type: req.auth!.type },
+    req.params.id,
+  );
+  res.json({ success: true, data });
+});
+
 export const invoice = asyncHandler(async (req: Request, res: Response) => {
   await streamInvoice(req.params.id, req.auth!, res);
 });

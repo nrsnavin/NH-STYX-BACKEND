@@ -285,11 +285,15 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       // payment is verified (see verifyRazorpay) — otherwise a cancelled or
       // failed payment would lose the customer's cart and silently eat stock.
       if (input.paymentMethod !== PaymentMethod.RAZORPAY) {
+        // Conditional decrement guards against overselling under concurrency.
         for (const item of cart.items) {
-          await tx.storeProduct.update({
-            where: { storeId_productId: { storeId: store.id, productId: item.productId } },
+          const dec = await tx.storeProduct.updateMany({
+            where: { storeId: store.id, productId: item.productId, stockQty: { gte: item.quantity } },
             data: { stockQty: { decrement: item.quantity } },
           });
+          if (dec.count !== 1) {
+            throw ApiError.badRequest(`${item.product.name} just went out of stock`);
+          }
         }
         await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
       }
@@ -362,6 +366,299 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       },
     } satisfies RazorpayCheckout,
   };
+}
+
+/** The Razorpay checkout payload the apps open. Shared by checkout + pay-now. */
+function buildCheckout(
+  order: { id: string; orderNumber: string },
+  customer: { ownerName: string | null; shopName: string; phone: string; email: string | null },
+  rzp: { id: string; amount: number; currency: string; receipt?: string },
+): RazorpayCheckout {
+  return {
+    enabled: true,
+    keyId: env.RAZORPAY_KEY_ID!,
+    orderId: rzp.id,
+    amountPaise: rzp.amount,
+    currency: rzp.currency,
+    name: 'NH Styx',
+    description: `Order ${order.orderNumber}`,
+    prefill: {
+      name: customer.ownerName ?? customer.shopName,
+      contact: customer.phone,
+      email: customer.email,
+    },
+    notes: { orderId: order.id, orderNumber: order.orderNumber, receipt: rzp.receipt ?? '' },
+  };
+}
+
+interface StaffOrderInput {
+  customerId: string;
+  addressId?: string;
+  paymentMethod: PaymentMethod;
+  items: { productId: string; quantity: number }[];
+  notes?: string;
+  bankReference?: string;
+}
+
+/**
+ * An agent/admin places an order ON BEHALF of a customer (e.g. a phoned-in bulk
+ * order) from explicit line items. Same GST/credit/stock rules as customer
+ * checkout; RAZORPAY orders are left UNPAID for the customer to pay later.
+ */
+export async function createStaffOrder(staffSub: string, input: StaffOrderInput) {
+  const customer = await prisma.customer.findUnique({
+    where: { id: input.customerId },
+    include: { store: true },
+  });
+  if (!customer) throw ApiError.notFound('Customer not found');
+  if (!customer.storeId || !customer.store) {
+    throw ApiError.badRequest('This customer is not linked to a store yet.');
+  }
+  const store = customer.store;
+
+  // Agents may only order for customers in their own store; admins: any store.
+  const staffStoreId = await getStaffStoreId(staffSub);
+  if (staffStoreId && staffStoreId !== store.id) {
+    throw ApiError.forbidden('This customer belongs to another store');
+  }
+  if (!input.items?.length) throw ApiError.badRequest('Add at least one item to the order');
+
+  // Delivery address: the given one, or the customer's default / first.
+  let address;
+  if (input.addressId) {
+    address = await prisma.address.findUnique({ where: { id: input.addressId } });
+    if (!address || address.customerId !== customer.id) {
+      throw ApiError.badRequest('Delivery address not found');
+    }
+  } else {
+    address = await prisma.address.findFirst({
+      where: { customerId: customer.id },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+    });
+    if (!address) throw ApiError.badRequest('This customer has no saved delivery address');
+  }
+
+  const productIds = [...new Set(input.items.map((i) => i.productId))];
+  const products = await prisma.product.findMany({ where: { id: { in: productIds } } });
+  const productById = new Map(products.map((p) => [p.id, p]));
+  const storeProducts = await prisma.storeProduct.findMany({
+    where: { storeId: store.id, productId: { in: productIds } },
+    include: { priceTiers: true },
+  });
+  const spByProduct = new Map(storeProducts.map((sp) => [sp.productId, sp]));
+
+  const intra = isIntraState(address.stateCode, address.state, store.stateCode, store.state);
+  let subtotalPaise = 0;
+  let cgstTotal = 0;
+  let sgstTotal = 0;
+  let igstTotal = 0;
+
+  const orderItems = input.items.map(({ productId, quantity }) => {
+    const product = productById.get(productId);
+    const sp = spByProduct.get(productId);
+    if (!product) throw ApiError.badRequest('A selected product was not found');
+    if (!product.isActive || !sp || !sp.isActive) {
+      throw ApiError.badRequest(`${product.name} is not stocked in this store`);
+    }
+    if (quantity < product.moqQty) {
+      throw ApiError.badRequest(`Minimum order quantity for ${product.name} is ${product.moqQty}`);
+    }
+    if (quantity > sp.stockQty) {
+      throw ApiError.badRequest(`Insufficient stock for ${product.name} (have ${sp.stockQty})`);
+    }
+    const unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, quantity);
+    const lineSubtotalPaise = unitPricePaise * quantity;
+    const tax = computeLineTax(lineSubtotalPaise, product.gstRatePercent, intra);
+    subtotalPaise += lineSubtotalPaise;
+    cgstTotal += tax.cgstPaise;
+    sgstTotal += tax.sgstPaise;
+    igstTotal += tax.igstPaise;
+    return {
+      productId: product.id,
+      productName: product.name,
+      hsnCode: product.hsnCode,
+      unit: product.unit,
+      quantity,
+      unitPricePaise,
+      gstRatePercent: product.gstRatePercent,
+      lineSubtotalPaise,
+      cgstPaise: tax.cgstPaise,
+      sgstPaise: tax.sgstPaise,
+      igstPaise: tax.igstPaise,
+      lineTotalPaise: lineSubtotalPaise + tax.taxPaise,
+    };
+  });
+
+  const deliveryPaise = env.DELIVERY_FEE_PAISE;
+  const totalPaise = subtotalPaise + cgstTotal + sgstTotal + igstTotal + deliveryPaise;
+
+  if (input.paymentMethod === PaymentMethod.COD) {
+    throw ApiError.badRequest('Cash on delivery is not available');
+  }
+  if (input.paymentMethod === PaymentMethod.CREDIT) {
+    if (!customer.creditApproved || customer.creditLimitPaise <= 0) {
+      throw ApiError.badRequest('Credit is not approved for this customer');
+    }
+    const open = await prisma.order.aggregate({
+      where: { customerId: customer.id, paymentMethod: PaymentMethod.CREDIT, paymentStatus: { not: 'PAID' } },
+      _sum: { amountDuePaise: true },
+    });
+    const available = customer.creditLimitPaise - (open._sum.amountDuePaise ?? 0);
+    if (totalPaise > available) {
+      throw ApiError.badRequest(
+        `Order exceeds the customer's available credit (₹${(available / 100).toFixed(0)} left)`,
+      );
+    }
+  }
+  if (input.paymentMethod === PaymentMethod.BANK_TRANSFER && !input.bankReference?.trim()) {
+    throw ApiError.badRequest('A bank transfer reference is required');
+  }
+
+  const dueDate =
+    input.paymentMethod === PaymentMethod.CREDIT && customer.creditDays > 0
+      ? new Date(Date.now() + customer.creditDays * 24 * 60 * 60 * 1000)
+      : null;
+  const receipt = `nhstyx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+
+  const order = await prisma.$transaction(
+    async (tx) => {
+      const orderNumber = await nextOrderNumber(tx);
+      const created = await tx.order.create({
+        data: {
+          orderNumber,
+          customerId: customer.id,
+          storeId: store.id,
+          status: OrderStatus.PENDING,
+          shipName: address.label ? `${customer.shopName} (${address.label})` : customer.shopName,
+          shipLine1: address.line1,
+          shipLine2: address.line2,
+          shipCity: address.city,
+          shipState: address.state,
+          shipPincode: address.pincode,
+          shipPhone: customer.phone,
+          gstinUsed: customer.gstin,
+          placeOfSupply: address.state,
+          sellerStateCode: store.stateCode,
+          subtotalPaise,
+          discountPaise: 0,
+          deliveryPaise,
+          cgstPaise: cgstTotal,
+          sgstPaise: sgstTotal,
+          igstPaise: igstTotal,
+          totalPaise,
+          paymentMethod: input.paymentMethod,
+          paymentStatus: OrderPaymentStatus.UNPAID,
+          amountPaidPaise: 0,
+          amountDuePaise: totalPaise,
+          dueDate,
+          items: { create: orderItems },
+        },
+        include: { items: true },
+      });
+
+      // Non-online orders consume stock immediately; RAZORPAY defers to payment.
+      // Conditional decrement (stockQty >= qty) prevents overselling under
+      // concurrent orders — if it doesn't update exactly one row, we roll back.
+      if (input.paymentMethod !== PaymentMethod.RAZORPAY) {
+        for (const item of orderItems) {
+          const dec = await tx.storeProduct.updateMany({
+            where: { storeId: store.id, productId: item.productId, stockQty: { gte: item.quantity } },
+            data: { stockQty: { decrement: item.quantity } },
+          });
+          if (dec.count !== 1) {
+            throw ApiError.badRequest(`${item.productName} just went out of stock`);
+          }
+        }
+      }
+      if (input.paymentMethod === PaymentMethod.RAZORPAY) {
+        await tx.payment.create({
+          data: { orderId: created.id, method: PaymentMethod.RAZORPAY, amountPaise: totalPaise, status: PaymentStatus.CREATED },
+        });
+      }
+      if (input.paymentMethod === PaymentMethod.BANK_TRANSFER) {
+        await tx.payment.create({
+          data: {
+            orderId: created.id,
+            method: PaymentMethod.BANK_TRANSFER,
+            amountPaise: totalPaise,
+            status: PaymentStatus.CREATED,
+            reference: input.bankReference?.trim(),
+            note: input.notes?.trim(),
+          },
+        });
+      }
+      return created;
+    },
+    { maxWait: 15000, timeout: 30000 },
+  );
+
+  if (input.paymentMethod !== PaymentMethod.RAZORPAY) return { order };
+
+  const razorpayOrder = await createRazorpayOrder({
+    amountPaise: totalPaise,
+    receipt,
+    notes: { customerId: customer.id, shopName: customer.shopName, storeId: store.id },
+  });
+  await prisma.payment.updateMany({
+    where: { orderId: order.id, method: PaymentMethod.RAZORPAY, status: PaymentStatus.CREATED },
+    data: { razorpayOrderId: razorpayOrder.id },
+  });
+  return { order, razorpay: buildCheckout(order, customer, razorpayOrder) };
+}
+
+/**
+ * (Re)issues a Razorpay checkout for an existing UNPAID online order, so the
+ * customer can pay it from the Orders screen (e.g. an agent-placed order).
+ */
+export async function reissueRazorpay(
+  actor: { sub: string; type: 'STAFF' | 'CUSTOMER' },
+  orderId: string,
+) {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { customer: true, payments: true },
+  });
+  if (!order) throw ApiError.notFound('Order not found');
+  if (actor.type === 'CUSTOMER' && order.customerId !== actor.sub) {
+    throw ApiError.forbidden('You cannot pay for this order');
+  }
+  if (actor.type === 'STAFF') {
+    const sid = await getStaffStoreId(actor.sub);
+    if (sid && order.storeId !== sid) throw ApiError.forbidden('This order belongs to another store');
+  }
+  if (order.paymentMethod !== PaymentMethod.RAZORPAY) {
+    throw ApiError.badRequest('This order is not an online (Razorpay) order');
+  }
+  if (order.paymentStatus === OrderPaymentStatus.PAID) {
+    throw ApiError.badRequest('This order is already paid');
+  }
+
+  let intent = order.payments.find(
+    (p) => p.method === PaymentMethod.RAZORPAY && p.status === PaymentStatus.CREATED,
+  );
+  if (!intent) {
+    intent = await prisma.payment.create({
+      data: { orderId: order.id, method: PaymentMethod.RAZORPAY, amountPaise: order.totalPaise, status: PaymentStatus.CREATED },
+    });
+  }
+
+  let razorpayOrderId = intent.razorpayOrderId;
+  if (!razorpayOrderId) {
+    const receipt = `nhstyx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const rzp = await createRazorpayOrder({
+      amountPaise: order.totalPaise,
+      receipt,
+      notes: { customerId: order.customerId, orderId: order.id, storeId: order.storeId ?? '' },
+    });
+    razorpayOrderId = rzp.id;
+    await prisma.payment.update({ where: { id: intent.id }, data: { razorpayOrderId } });
+  }
+
+  return buildCheckout(order, order.customer, {
+    id: razorpayOrderId,
+    amount: order.totalPaise,
+    currency: RAZORPAY_CURRENCY,
+  });
 }
 
 export async function listOrders(
@@ -534,9 +831,11 @@ export async function verifyRazorpay(
       },
     });
 
-    // Payment confirmed — NOW consume stock and empty the cart. We deferred
-    // both from checkout so an abandoned/failed payment left them untouched.
-    // Guarded by the CREATED→PAID intent transition above, so this runs once.
+    // Payment confirmed — NOW consume stock and clear the ordered lines from
+    // the cart. Deferred from checkout so an abandoned/failed payment left them
+    // untouched. Guarded by the CREATED→PAID transition above, so it runs once.
+    // The decrement is unconditional here (unlike checkout): the customer has
+    // already paid, so we honour the order even if it drives stock negative.
     if (order.storeId) {
       for (const item of order.items) {
         await tx.storeProduct.updateMany({
@@ -545,8 +844,14 @@ export async function verifyRazorpay(
         });
       }
     }
+    // Only clear the lines this order covered (not the whole cart) — correct for
+    // agent-placed orders and keeps items added after checkout.
     const cart = await tx.cart.findUnique({ where: { customerId } });
-    if (cart) await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+    if (cart) {
+      await tx.cartItem.deleteMany({
+        where: { cartId: cart.id, productId: { in: order.items.map((i) => i.productId) } },
+      });
+    }
 
     return recompute(tx, orderId);
   });
