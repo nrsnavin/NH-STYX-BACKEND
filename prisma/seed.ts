@@ -172,6 +172,14 @@ async function main() {
   const fixtures = await cat('Store Fixtures', 'store-fixtures', 5);
   const trims = await cat('Trims & Accessories', 'trims-accessories', 6);
 
+  // Sub-categories so the Categories page groups nicely (parent → children).
+  await cat('Carry Bags', 'carry-bags', 2, packaging.id);
+  await cat('Gift Wrap', 'gift-wrap', 3, packaging.id);
+  await cat('Hangers', 'hangers', 1, hangers.id);
+  await cat('Mannequins', 'mannequins', 2, hangers.id);
+  await cat('Buttons & Zips', 'buttons-zips', 1, trims.id);
+  await cat('Threads', 'threads', 2, trims.id);
+
   // --- Catalog products (shared) + per-store stock & price ---
   interface Tier {
     minQty: number;
