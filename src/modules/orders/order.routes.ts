@@ -11,6 +11,7 @@ import {
   orderIdSchema,
   razorpayVerifySchema,
   recordPaymentSchema,
+  shipOrderSchema,
   staffOrderSchema,
   updateOrderStatusSchema,
 } from './order.validation';
@@ -60,6 +61,22 @@ router.patch(
   authorize('ADMIN', 'AGENT'),
   validate(updateOrderStatusSchema),
   orderController.updateStatus,
+);
+
+// Record a dispatch (courier + AWB) → SHIPPED, and mark delivered.
+router.post(
+  '/:id/ship',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(shipOrderSchema),
+  orderController.ship,
+);
+router.post(
+  '/:id/deliver',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(orderIdSchema),
+  orderController.deliver,
 );
 router.post(
   '/:id/payments',

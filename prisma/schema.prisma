@@ -183,6 +183,8 @@ model Customer {
   couponRedemptions CouponRedemption[]
   quotations        Quotation[]
   reviews           Review[]
+  returns           OrderReturn[]
+  notifications     Notification[]
 
   @@index([phone])
   @@index([storeId])
@@ -494,6 +496,13 @@ model Order {
   invoiceNumber String?   @unique
   invoiceDate   DateTime?
 
+  // ---- Shipment tracking (filled when the order is dispatched) ----
+  courierName    String?
+  trackingNumber String? // AWB / consignment number
+  trackingUrl    String?
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -502,6 +511,7 @@ model Order {
   events           OrderEvent[] // status-change history (placed/confirmed/shipped…)
   stockMovements   StockMovement[]
   couponRedemption CouponRedemption?
+  returns          OrderReturn[]
 
   @@index([customerId])
   @@index([storeId])
@@ -534,6 +544,8 @@ model OrderItem {
   sgstPaise         Int @default(0)
   igstPaise         Int @default(0)
   lineTotalPaise    Int // subtotal + taxes
+
+  returnItems OrderReturnItem[]
 
   @@index([orderId])
   @@index([productId])
@@ -968,4 +980,93 @@ model Review {
 
   @@unique([productId, customerId]) // one review per shop per product (re-edit upserts)
   @@index([productId])
+}
+
+// ------------------------------------------------------------
+//  Returns & refunds
+// ------------------------------------------------------------
+
+enum ReturnStatus {
+  REQUESTED // customer/staff raised it
+  APPROVED // accepted, awaiting refund
+  REJECTED // declined
+  REFUNDED // money returned + stock released
+  CANCELLED // withdrawn before processing
+}
+
+// A return raised against a delivered/confirmed order. Restocks the returned
+// quantities (RELEASE ledger entries) and refunds via the original method.
+model OrderReturn {
+  id           String       @id @default(uuid())
+  returnNumber String       @unique // e.g. "RET-2026-00007"
+  orderId      String
+  order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  status       ReturnStatus @default(REQUESTED)
+  reason       String?
+
+  // Refund (computed from the returned lines).
+  refundAmountPaise Int            @default(0)
+  refundMethod      PaymentMethod?
+  refundReference   String? // razorpay refund id / manual UTR
+  restocked         Boolean        @default(false)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  processedAt DateTime?
+
+  items OrderReturnItem[]
+
+  @@index([orderId])
+  @@index([customerId])
+  @@index([status])
+}
+
+model OrderReturnItem {
+  id              String      @id @default(uuid())
+  returnId        String
+  return          OrderReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  orderItemId     String
+  orderItem       OrderItem   @relation(fields: [orderItemId], references: [id])
+  quantity        Int // units being returned (<= ordered quantity)
+  // Snapshot for refund math, independent of later order edits.
+  unitPricePaise  Int
+  lineRefundPaise Int
+
+  @@index([returnId])
+}
+
+// ------------------------------------------------------------
+//  Notifications (outbox)
+// ------------------------------------------------------------
+
+enum NotificationAudience {
+  CUSTOMER // shown in the customer app feed
+  STAFF // shown in the ops console
+}
+
+enum NotificationStatus {
+  SENT // recorded / in-app delivered
+  READ // opened by the recipient
+  FAILED // an external channel failed
+}
+
+// One row per dispatched event. The in-app feed reads these; external channels
+// (email/SMS/push) hang off the same dispatch hook.
+model Notification {
+  id         String               @id @default(uuid())
+  audience   NotificationAudience
+  customerId String? // set for CUSTOMER notifications
+  customer   Customer?            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  event      String // ORDER_PLACED, PAYMENT_RECEIVED, ORDER_SHIPPED, …
+  title      String
+  body       String
+  orderId    String? // deep-link context
+  status     NotificationStatus   @default(SENT)
+  readAt     DateTime?
+  createdAt  DateTime             @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([audience, status])
 }
