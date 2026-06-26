@@ -37,6 +37,9 @@ const envSchema = z.object({
   // Razorpay (optional — gateway calls are stubbed when unset).
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
+  // Webhook signing secret (Razorpay dashboard → Webhooks). When unset the
+  // webhook accepts unsigned posts so local testing works.
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 
   // Anthropic (optional — AI search falls back to keyword search when unset).
   ANTHROPIC_API_KEY: z.string().optional(),

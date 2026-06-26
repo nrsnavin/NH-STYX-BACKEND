@@ -66,3 +66,12 @@ export const razorpayVerifySchema = z.object({
     razorpaySignature: z.string().min(3),
   }),
 });
+
+export const shipOrderSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    courierName: z.string().max(120).optional(),
+    trackingNumber: z.string().max(120).optional(),
+    trackingUrl: z.string().url().max(500).optional().or(z.literal('')),
+  }),
+});

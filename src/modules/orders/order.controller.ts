@@ -88,3 +88,30 @@ export const verifyRazorpay = asyncHandler(async (req: Request, res: Response) =
   const data = await orderService.verifyRazorpay(req.auth!.sub, req.params.id, req.body);
   res.json({ success: true, data });
 });
+
+// Staff records a dispatch (courier + AWB) and flips the order to SHIPPED.
+export const ship = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.shipOrder(req.params.id, req.body, req.auth!.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'order.ship',
+    entity: 'Order',
+    entityId: req.params.id,
+    meta: { courierName: req.body.courierName, trackingNumber: req.body.trackingNumber },
+  });
+  res.json({ success: true, data });
+});
+
+// Staff marks the order delivered.
+export const deliver = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.markDelivered(req.params.id, req.auth!.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'order.deliver',
+    entity: 'Order',
+    entityId: req.params.id,
+  });
+  res.json({ success: true, data });
+});

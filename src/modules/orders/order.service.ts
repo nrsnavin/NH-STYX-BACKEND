@@ -15,6 +15,12 @@ import { computeLineTax, isIntraState, resolveUnitPrice } from '../../utils/pric
 import { recordOrderEvent, recordStockMovement } from '../../utils/ledger';
 import { getStaffStoreId } from '../../utils/storeContext';
 import * as couponService from '../coupons/coupon.service';
+import {
+  notifyOrderDelivered,
+  notifyOrderPlaced,
+  notifyOrderShipped,
+  notifyPaymentReceived,
+} from '../notifications/notification.service';
 
 const RAZORPAY_CURRENCY = 'INR';
 
@@ -367,6 +373,7 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
       // payment is verified (see verifyRazorpay) — otherwise a cancelled or
       // failed payment would lose the customer's cart and silently eat stock.
       await recordOrderEvent(tx, order.id, OrderStatus.PENDING, { note: 'Order placed' });
+      await notifyOrderPlaced(tx, order);
 
       if (appliedCoupon) {
         await couponService.redeem(tx, appliedCoupon.id, customerId, order.id, discountPaise);
@@ -671,6 +678,7 @@ export async function createStaffOrder(staffSub: string, input: StaffOrderInput)
         note: 'Order placed by staff',
         userId: staffSub,
       });
+      await notifyOrderPlaced(tx, created);
 
       // Non-online orders consume stock immediately; RAZORPAY defers to payment.
       // Conditional decrement (stockQty >= qty) prevents overselling under
@@ -843,6 +851,7 @@ export async function getOrder(
       events: { orderBy: { createdAt: 'asc' }, include: { user: { select: { name: true } } } },
       customer: { select: { shopName: true, phone: true, gstin: true } },
       store: { select: { id: true, name: true, city: true } },
+      returns: { include: { items: true }, orderBy: { createdAt: 'desc' } },
     },
   });
   if (!order) throw ApiError.notFound('Order not found');
@@ -925,6 +934,83 @@ export async function recordPayment(
 }
 
 /** Verifies a Razorpay payment (HMAC check when a secret is configured). */
+/**
+ * Marks the order's pending Razorpay intent PAID, consumes stock (SALE ledger)
+ * and clears the ordered cart lines. Idempotent: returns false when there is no
+ * pending intent (already settled — e.g. the webhook and the client both fire).
+ * Shared by the client verify path and the webhook backstop.
+ */
+async function settleRazorpayPayment(
+  tx: Prisma.TransactionClient,
+  order: {
+    id: string;
+    storeId: string | null;
+    customerId: string;
+    items: { productId: string; variantId: string | null; quantity: number }[];
+  },
+  refs: { razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature?: string },
+): Promise<boolean> {
+  const intent = await tx.payment.findFirst({
+    where: { orderId: order.id, method: PaymentMethod.RAZORPAY, status: PaymentStatus.CREATED },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!intent) return false;
+  if (intent.razorpayOrderId && intent.razorpayOrderId !== refs.razorpayOrderId) {
+    throw ApiError.badRequest('Razorpay order does not match this checkout');
+  }
+  await tx.payment.update({
+    where: { id: intent.id },
+    data: {
+      status: PaymentStatus.PAID,
+      paidAt: new Date(),
+      razorpayOrderId: refs.razorpayOrderId,
+      razorpayPaymentId: refs.razorpayPaymentId,
+      razorpaySignature: refs.razorpaySignature ?? intent.razorpaySignature,
+    },
+  });
+
+  // Consume stock now (deferred from checkout so an abandoned payment left it
+  // untouched). Unconditional: the customer has paid, so honour the order even
+  // if it drives stock negative.
+  if (order.storeId) {
+    for (const item of order.items) {
+      if (item.variantId) {
+        await tx.storeVariant.updateMany({
+          where: { storeId: order.storeId, variantId: item.variantId },
+          data: { stockQty: { decrement: item.quantity } },
+        });
+      } else {
+        await tx.storeProduct.updateMany({
+          where: { storeId: order.storeId, productId: item.productId },
+          data: { stockQty: { decrement: item.quantity } },
+        });
+      }
+      await recordStockMovement(tx, {
+        storeId: order.storeId,
+        productId: item.productId,
+        variantId: item.variantId,
+        deltaQty: -item.quantity,
+        type: StockMovementType.SALE,
+        orderId: order.id,
+        reason: 'Razorpay payment confirmed',
+      });
+    }
+  }
+
+  // Clear only the lines this order covered (keeps items added after checkout).
+  const cart = await tx.cart.findUnique({ where: { customerId: order.customerId } });
+  if (cart) {
+    await tx.cartItem.deleteMany({
+      where: {
+        cartId: cart.id,
+        OR: order.items.map((i) => ({ productId: i.productId, variantId: i.variantId })),
+      },
+    });
+  }
+  return true;
+}
+
+/** Verifies a Razorpay payment (HMAC check when a secret is configured). */
 export async function verifyRazorpay(
   customerId: string,
   orderId: string,
@@ -949,69 +1035,96 @@ export async function verifyRazorpay(
   // When no secret is configured (dev/scaffold) the payment is accepted as-is.
 
   return tenantTransaction(async (tx) => {
-    const intent = await tx.payment.findFirst({
-      where: { orderId, method: PaymentMethod.RAZORPAY, status: PaymentStatus.CREATED },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!intent) {
-      throw ApiError.badRequest('No pending Razorpay payment found for this order');
+    const settled = await settleRazorpayPayment(tx, order, input);
+    if (settled) {
+      await notifyPaymentReceived(tx, order);
+    } else {
+      // Already settled (the webhook beat the client here) — idempotent success,
+      // unless there is genuinely no Razorpay payment on record.
+      const paid = await tx.payment.findFirst({
+        where: { orderId, method: PaymentMethod.RAZORPAY, status: PaymentStatus.PAID },
+      });
+      if (!paid) throw ApiError.badRequest('No pending Razorpay payment found for this order');
     }
-    if (intent.razorpayOrderId && intent.razorpayOrderId !== input.razorpayOrderId) {
-      throw ApiError.badRequest('Razorpay order does not match this checkout');
+    return recompute(tx, orderId);
+  });
+}
+
+/**
+ * Razorpay webhook backstop: confirms a captured payment even if the customer's
+ * app never returned to call verify. Looks up the order by its Razorpay order id
+ * and settles idempotently (a no-op if the client already confirmed it). Runs on
+ * the trusted system path (no customer context).
+ */
+export async function settleRazorpayWebhookPayment(refs: {
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+}): Promise<void> {
+  const payment = await prisma.payment.findFirst({
+    where: { razorpayOrderId: refs.razorpayOrderId },
+    include: { order: { include: { items: true } } },
+  });
+  if (!payment?.order) {
+    logger.warn({ razorpayOrderId: refs.razorpayOrderId }, 'razorpay webhook: no matching order');
+    return;
+  }
+  const order = payment.order;
+  await tenantTransaction(async (tx) => {
+    const settled = await settleRazorpayPayment(tx, order, refs);
+    if (settled) {
+      await notifyPaymentReceived(tx, order);
+      await recompute(tx, order.id);
     }
-    await tx.payment.update({
-      where: { id: intent.id },
+  });
+}
+
+/** Staff dispatches an order: records courier/AWB, flips to SHIPPED, notifies. */
+export async function shipOrder(
+  id: string,
+  input: { courierName?: string; trackingNumber?: string; trackingUrl?: string },
+  actorId?: string,
+) {
+  const order = await prisma.order.findUnique({ where: { id } });
+  if (!order) throw ApiError.notFound('Order not found');
+  if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.RETURNED) {
+    throw ApiError.badRequest(`Cannot ship a ${order.status.toLowerCase()} order`);
+  }
+  return tenantTransaction(async (tx) => {
+    const updated = await tx.order.update({
+      where: { id },
       data: {
-        status: PaymentStatus.PAID,
-        paidAt: new Date(),
-        razorpayOrderId: input.razorpayOrderId,
-        razorpayPaymentId: input.razorpayPaymentId,
-        razorpaySignature: input.razorpaySignature,
+        status: OrderStatus.SHIPPED,
+        courierName: input.courierName?.trim() || null,
+        trackingNumber: input.trackingNumber?.trim() || null,
+        trackingUrl: input.trackingUrl?.trim() || null,
+        shippedAt: order.shippedAt ?? new Date(),
       },
     });
+    const via = input.courierName ? ` via ${input.courierName.trim()}` : '';
+    const awb = input.trackingNumber ? ` (${input.trackingNumber.trim()})` : '';
+    await recordOrderEvent(tx, id, OrderStatus.SHIPPED, {
+      userId: actorId,
+      note: `Shipped${via}${awb}`,
+    });
+    await notifyOrderShipped(tx, updated);
+    return updated;
+  });
+}
 
-    // Payment confirmed — NOW consume stock and clear the ordered lines from
-    // the cart. Deferred from checkout so an abandoned/failed payment left them
-    // untouched. Guarded by the CREATED→PAID transition above, so it runs once.
-    // The decrement is unconditional here (unlike checkout): the customer has
-    // already paid, so we honour the order even if it drives stock negative.
-    if (order.storeId) {
-      for (const item of order.items) {
-        if (item.variantId) {
-          await tx.storeVariant.updateMany({
-            where: { storeId: order.storeId, variantId: item.variantId },
-            data: { stockQty: { decrement: item.quantity } },
-          });
-        } else {
-          await tx.storeProduct.updateMany({
-            where: { storeId: order.storeId, productId: item.productId },
-            data: { stockQty: { decrement: item.quantity } },
-          });
-        }
-        await recordStockMovement(tx, {
-          storeId: order.storeId,
-          productId: item.productId,
-          variantId: item.variantId,
-          deltaQty: -item.quantity,
-          type: StockMovementType.SALE,
-          orderId: order.id,
-          reason: 'Razorpay payment confirmed',
-        });
-      }
-    }
-    // Only clear the lines this order covered (not the whole cart) — correct for
-    // agent-placed orders and keeps items added after checkout. Match each
-    // ordered (product, variant) tuple precisely.
-    const cart = await tx.cart.findUnique({ where: { customerId } });
-    if (cart) {
-      await tx.cartItem.deleteMany({
-        where: {
-          cartId: cart.id,
-          OR: order.items.map((i) => ({ productId: i.productId, variantId: i.variantId })),
-        },
-      });
-    }
-
-    return recompute(tx, orderId);
+/** Staff marks an order delivered. */
+export async function markDelivered(id: string, actorId?: string) {
+  const order = await prisma.order.findUnique({ where: { id } });
+  if (!order) throw ApiError.notFound('Order not found');
+  if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.RETURNED) {
+    throw ApiError.badRequest(`Cannot deliver a ${order.status.toLowerCase()} order`);
+  }
+  return tenantTransaction(async (tx) => {
+    const updated = await tx.order.update({
+      where: { id },
+      data: { status: OrderStatus.DELIVERED, deliveredAt: order.deliveredAt ?? new Date() },
+    });
+    await recordOrderEvent(tx, id, OrderStatus.DELIVERED, { userId: actorId, note: 'Delivered' });
+    await notifyOrderDelivered(tx, updated);
+    return updated;
   });
 }

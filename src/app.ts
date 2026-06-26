@@ -7,6 +7,7 @@ import { pinoHttp } from 'pino-http';
 import { env } from './config/env';
 import { logger } from './config/logger';
 import apiRoutes from './routes';
+import webhookRoutes from './modules/webhooks/webhook.routes';
 import { UPLOAD_DIR } from './modules/uploads/upload.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import { tenantContext } from './middlewares/tenantContext.middleware';
@@ -23,6 +24,12 @@ export function createApp(): Application {
     }),
   );
   app.use(compression());
+
+  // Webhooks need the RAW body for signature verification, so they are mounted
+  // (with their own raw parser) BEFORE the JSON body parser. Outside the API
+  // prefix → no tenant context or rate limit.
+  app.use('/webhooks', express.raw({ type: '*/*' }), webhookRoutes);
+
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use(pinoHttp({ logger }));

@@ -19,6 +19,8 @@ import couponRoutes from '../modules/coupons/coupon.routes';
 import variantRoutes from '../modules/variants/variant.routes';
 import quotationRoutes from '../modules/quotations/quotation.routes';
 import purchasingRoutes from '../modules/purchasing/purchasing.routes';
+import returnRoutes from '../modules/returns/return.routes';
+import notificationRoutes from '../modules/notifications/notification.routes';
 
 const router = Router();
 
@@ -58,5 +60,7 @@ router.use('/coupons', couponRoutes);
 router.use('/variants', variantRoutes);
 router.use('/quotations', quotationRoutes);
 router.use('/purchasing', purchasingRoutes);
+router.use('/returns', returnRoutes);
+router.use('/notifications', notificationRoutes);
 
 export default router;
