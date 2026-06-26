@@ -18,6 +18,7 @@ const staff = [authenticate, authorize('ADMIN', 'AGENT')] as const;
 // Leads pipeline.
 router.get('/leads', ...staff, validate(listLeadsSchema), crm.list);
 router.get('/analytics/sources', ...staff, crm.sourceAnalytics);
+router.get('/analytics/dashboard', ...staff, crm.dashboard);
 router.post('/leads', ...staff, validate(createLeadSchema), crm.create);
 router.get('/leads/:id', ...staff, validate(leadIdSchema), crm.getOne);
 router.patch('/leads/:id', ...staff, validate(updateLeadSchema), crm.update);

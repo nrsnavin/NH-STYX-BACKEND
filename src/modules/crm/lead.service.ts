@@ -88,6 +88,99 @@ export async function sourceAnalytics(storeId?: string | null) {
     .sort((a, b) => b.total - a.total);
 }
 
+const OPEN_STAGES: LeadStage[] = [LeadStage.NEW, LeadStage.CONTACTED, LeadStage.QUALIFIED];
+
+/**
+ * Pipeline-oriented analytics for the CRM dashboard: value by stage, an agent
+ * leaderboard, monthly new-vs-won conversion, and a follow-up ageing breakdown.
+ * Everything respects the agent's store scope (null = admin, all stores).
+ */
+export async function crmDashboard(storeId: string | null) {
+  const scope: Prisma.LeadWhereInput = storeId ? { storeId } : {};
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
+  const weekAhead = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+
+  const [stageRows, totalsByAgent, wonByAgent, recent, openFollowups] = await Promise.all([
+    prisma.lead.groupBy({ by: ['stage'], where: scope, _count: { _all: true }, _sum: { estValuePaise: true } }),
+    prisma.lead.groupBy({
+      by: ['assignedToId'],
+      where: { ...scope, assignedToId: { not: null } },
+      _count: { _all: true },
+    }),
+    prisma.lead.groupBy({
+      by: ['assignedToId'],
+      where: { ...scope, assignedToId: { not: null }, stage: LeadStage.WON },
+      _count: { _all: true },
+      _sum: { estValuePaise: true },
+    }),
+    prisma.lead.findMany({
+      where: { ...scope, createdAt: { gte: sixMonthsAgo } },
+      select: { createdAt: true, stage: true },
+    }),
+    prisma.lead.findMany({
+      where: { ...scope, stage: { in: OPEN_STAGES } },
+      select: { nextFollowUpAt: true },
+    }),
+  ]);
+
+  // Pipeline value by stage (every stage present, even at zero).
+  const stageMap = new Map(stageRows.map((r) => [r.stage, r]));
+  const pipeline = (['NEW', 'CONTACTED', 'QUALIFIED', 'WON', 'LOST'] as LeadStage[]).map((stage) => ({
+    stage,
+    count: stageMap.get(stage)?._count._all ?? 0,
+    valuePaise: stageMap.get(stage)?._sum.estValuePaise ?? 0,
+  }));
+
+  // Agent leaderboard (name resolved from User).
+  const wonMap = new Map(wonByAgent.map((w) => [w.assignedToId, w]));
+  const agentIds = totalsByAgent.map((t) => t.assignedToId!).filter(Boolean);
+  const users = await prisma.user.findMany({
+    where: { id: { in: agentIds } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(users.map((u) => [u.id, u.name]));
+  const leaderboard = totalsByAgent
+    .map((t) => ({
+      agentId: t.assignedToId!,
+      name: nameById.get(t.assignedToId!) ?? 'Unknown',
+      total: t._count._all,
+      won: wonMap.get(t.assignedToId!)?._count._all ?? 0,
+      wonValuePaise: wonMap.get(t.assignedToId!)?._sum.estValuePaise ?? 0,
+    }))
+    .sort((a, b) => b.won - a.won || b.total - a.total);
+
+  // Monthly new-vs-won (cohort: of leads created in a month, how many are WON).
+  const months: { month: string; created: number; won: number }[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({ month: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, created: 0, won: 0 });
+  }
+  const monthIndex = new Map(months.map((m, i) => [m.month, i]));
+  for (const l of recent) {
+    const key = `${l.createdAt.getFullYear()}-${String(l.createdAt.getMonth() + 1).padStart(2, '0')}`;
+    const idx = monthIndex.get(key);
+    if (idx === undefined) continue;
+    months[idx].created += 1;
+    if (l.stage === LeadStage.WON) months[idx].won += 1;
+  }
+
+  // Follow-up ageing for the open pipeline.
+  const aging = { overdue: 0, today: 0, upcoming: 0, later: 0, none: 0 };
+  for (const l of openFollowups) {
+    const f = l.nextFollowUpAt;
+    if (!f) aging.none += 1;
+    else if (f < startOfToday) aging.overdue += 1;
+    else if (f < endOfToday) aging.today += 1;
+    else if (f < weekAhead) aging.upcoming += 1;
+    else aging.later += 1;
+  }
+
+  return { pipeline, leaderboard, conversion: months, aging };
+}
+
 export async function getLead(id: string) {
   const lead = await prisma.lead.findUnique({
     where: { id },

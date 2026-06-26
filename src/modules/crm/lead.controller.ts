@@ -42,6 +42,13 @@ export const sourceAnalytics = asyncHandler(async (req: Request, res: Response) 
   res.json({ success: true, items: data });
 });
 
+/** Pipeline dashboard: value by stage, agent leaderboard, conversion, ageing. */
+export const dashboard = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = await storeScope(req);
+  const data = await leadService.crmDashboard(storeId);
+  res.json({ success: true, data });
+});
+
 export const getOne = asyncHandler(async (req: Request, res: Response) => {
   const data = await leadService.getLead(req.params.id);
   await assertScope(req, data.storeId);
