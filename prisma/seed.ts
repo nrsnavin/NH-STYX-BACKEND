@@ -197,6 +197,9 @@ async function main() {
     gstRatePercent: number;
     mrpPaise?: number;
     moqQty: number;
+    // Optional explicit image; defaults to a deterministic per-slug photo so
+    // the storefront always renders an image rather than a placeholder.
+    imageUrl?: string;
     // Pune store inventory
     pricePaise: number;
     stockQty: number;
@@ -205,10 +208,14 @@ async function main() {
     inMumbai?: boolean;
   }
 
+  const imageFor = (s: Seed) =>
+    s.imageUrl ?? `https://picsum.photos/seed/${s.slug}/600/600`;
+
   const catalog = (s: Seed) =>
     prisma.product.upsert({
       where: { slug: s.slug },
-      update: { tags: s.tags ?? [] },
+      // Backfill the image (and tags) on re-seed so existing catalogs get photos.
+      update: { tags: s.tags ?? [], imageUrl: imageFor(s) },
       create: {
         name: s.name,
         slug: s.slug,
@@ -221,6 +228,7 @@ async function main() {
         gstRatePercent: s.gstRatePercent,
         mrpPaise: s.mrpPaise,
         moqQty: s.moqQty,
+        imageUrl: imageFor(s),
       },
     });
 
