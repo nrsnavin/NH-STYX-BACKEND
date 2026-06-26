@@ -37,10 +37,21 @@ export const errorHandler = (
     } else if (err.code === 'P2025') {
       statusCode = 404;
       message = 'Record not found';
+    } else if (err.code === 'P2021' || err.code === 'P2022') {
+      // Missing table / column: the DB is behind the Prisma schema (a migration
+      // hasn't been applied). Surfaced clearly instead of "Database request error".
+      statusCode = 503;
+      message = 'The database schema is out of date. Apply the latest migrations (prisma migrate deploy).';
+      if (!isProduction) details = { code: err.code, meta: err.meta };
     } else {
       statusCode = 400;
       message = 'Database request error';
+      if (!isProduction) details = { code: err.code, meta: err.meta };
     }
+  } else if (err instanceof Prisma.PrismaClientInitializationError) {
+    // Can't reach / authenticate to the database at all.
+    statusCode = 503;
+    message = 'Cannot reach the database. Please try again shortly.';
   } else if (err instanceof Error) {
     message = err.message;
   }
