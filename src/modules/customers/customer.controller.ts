@@ -5,6 +5,8 @@ import { ApiError } from '../../utils/ApiError';
 import { audit } from '../../utils/audit';
 import { getStaffStoreId } from '../../utils/storeContext';
 import * as customerService from './customer.service';
+import { customerInsights } from './customer.insights';
+import { createWinbackOffer } from './customer.winback';
 
 export const list = asyncHandler(async (req: Request, res: Response) => {
   const { page, limit, search, status } = req.query as unknown as {
@@ -23,6 +25,29 @@ export const getOne = asyncHandler(async (req: Request, res: Response) => {
   const data = await customerService.getCustomer(req.params.id);
   await assertStoreScope(req, data.storeId);
   res.json({ success: true, data });
+});
+
+export const insights = asyncHandler(async (req: Request, res: Response) => {
+  const customer = await customerService.getCustomer(req.params.id);
+  await assertStoreScope(req, customer.storeId);
+  const data = await customerInsights(req.params.id);
+  res.json({ success: true, data });
+});
+
+/** One-click reactivation: mints a single-use coupon to win the shop back. */
+export const winback = asyncHandler(async (req: Request, res: Response) => {
+  const customer = await customerService.getCustomer(req.params.id);
+  await assertStoreScope(req, customer.storeId);
+  const data = await createWinbackOffer(req.params.id, req.body ?? {});
+  await audit({
+    actorType: 'STAFF',
+    actorId: req.auth!.sub,
+    action: 'customer.winback',
+    entity: 'Customer',
+    entityId: req.params.id,
+    meta: { code: data.code, percent: data.percent },
+  });
+  res.status(201).json({ success: true, data });
 });
 
 export const update = asyncHandler(async (req: Request, res: Response) => {

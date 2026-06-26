@@ -15,6 +15,9 @@ const router = Router();
 // Staff-only customer management.
 router.get('/', authenticate, authorize('ADMIN', 'AGENT'), validate(listCustomersSchema), customerController.list);
 router.get('/:id', authenticate, authorize('ADMIN', 'AGENT'), validate(customerIdSchema), customerController.getOne);
+// Customer 360 (RFM + spend/credit metrics) and one-click win-back offer.
+router.get('/:id/insights', authenticate, authorize('ADMIN', 'AGENT'), validate(customerIdSchema), customerController.insights);
+router.post('/:id/winback', authenticate, authorize('ADMIN', 'AGENT'), validate(customerIdSchema), customerController.winback);
 router.patch('/:id', authenticate, authorize('ADMIN'), validate(updateCustomerSchema), customerController.update);
 
 // Registration approval — the serving store's agent (or an admin) decides.

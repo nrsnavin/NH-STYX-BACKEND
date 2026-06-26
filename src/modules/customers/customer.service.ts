@@ -1,6 +1,7 @@
 import { CustomerStatus, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
+import { statsForCustomers } from './customer.insights';
 
 const publicSelect = {
   id: true,
@@ -44,7 +45,7 @@ export async function listCustomers(params: {
       : {}),
   };
 
-  const [items, total] = await Promise.all([
+  const [rows, total] = await Promise.all([
     prisma.customer.findMany({
       where,
       select: { ...publicSelect, _count: { select: { orders: true } } },
@@ -54,6 +55,10 @@ export async function listCustomers(params: {
     }),
     prisma.customer.count({ where }),
   ]);
+
+  // Attach LTV / order count / last-order / RFM segment (one groupBy for the page).
+  const stats = await statsForCustomers(rows.map((c) => c.id));
+  const items = rows.map((c) => ({ ...c, ...(stats.get(c.id) ?? {}) }));
 
   return { items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
 }
