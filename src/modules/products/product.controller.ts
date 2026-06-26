@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { audit } from '../../utils/audit';
-import { getCustomerStoreId } from '../../utils/storeContext';
+import { getCustomerStoreId, getStaffStoreId } from '../../utils/storeContext';
 import * as productService from './product.service';
 import { composeStoreVariants } from '../variants/variant.service';
 
@@ -85,6 +85,14 @@ export const getOne = asyncHandler(async (req: Request, res: Response) => {
 
   const data = await productService.getCatalogProduct(req.params.id);
   res.json({ success: true, data });
+});
+
+/** Per-product stock ledger. Admins see all stores; an agent only their own. */
+export const movements = asyncHandler(async (req: Request, res: Response) => {
+  const { page, limit } = req.query as unknown as { page: number; limit: number };
+  const storeId = req.auth!.role === 'ADMIN' ? null : await getStaffStoreId(req.auth!.sub);
+  const data = await productService.listProductMovements(req.params.id, { storeId, page, limit });
+  res.json({ success: true, ...data });
 });
 
 export const create = asyncHandler(async (req: Request, res: Response) => {

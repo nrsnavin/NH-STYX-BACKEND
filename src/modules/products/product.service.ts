@@ -248,6 +248,37 @@ export async function getCatalogProduct(id: string): Promise<CatalogProduct> {
   return product;
 }
 
+/** Stock-movement ledger for a product across stores (or one store for agents),
+ *  with the store, variant, order and staff member resolved. */
+export async function listProductMovements(
+  productId: string,
+  params: { storeId?: string | null; page: number; limit: number },
+) {
+  const where: Prisma.StockMovementWhereInput = {
+    productId,
+    ...(params.storeId ? { storeId: params.storeId } : {}),
+  };
+  const [items, total] = await Promise.all([
+    prisma.stockMovement.findMany({
+      where,
+      include: {
+        store: { select: { name: true, code: true } },
+        variant: { select: { name: true } },
+        user: { select: { name: true } },
+        order: { select: { orderNumber: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (params.page - 1) * params.limit,
+      take: params.limit,
+    }),
+    prisma.stockMovement.count({ where }),
+  ]);
+  return {
+    items,
+    pagination: { page: params.page, limit: params.limit, total, totalPages: Math.ceil(total / params.limit) },
+  };
+}
+
 interface CreateProductInput {
   name: string;
   description?: string;
