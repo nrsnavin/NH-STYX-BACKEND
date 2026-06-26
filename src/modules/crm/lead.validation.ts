@@ -66,6 +66,14 @@ export const addActivitySchema = z.object({
       leadId: z.string().uuid().optional(),
       customerId: z.string().uuid().optional(),
       followUpAt: z.string().datetime().nullable().optional(),
+      latitude: z.number().min(-90).max(90).optional(),
+      longitude: z.number().min(-180).max(180).optional(),
     })
     .refine((b) => b.leadId || b.customerId, { message: 'leadId or customerId is required' }),
+});
+
+export const listVisitsSchema = z.object({
+  query: z.object({
+    days: z.coerce.number().int().positive().max(180).default(30),
+  }),
 });

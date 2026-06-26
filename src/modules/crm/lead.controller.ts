@@ -76,8 +76,24 @@ export const listActivities = asyncHandler(async (req: Request, res: Response) =
 
 export const addActivity = asyncHandler(async (req: Request, res: Response) => {
   const data = await leadService.addActivity(
-    req.body as { type: ActivityType; body: string; leadId?: string; customerId?: string; followUpAt?: string | null },
+    req.body as {
+      type: ActivityType;
+      body: string;
+      leadId?: string;
+      customerId?: string;
+      followUpAt?: string | null;
+      latitude?: number;
+      longitude?: number;
+    },
     req.auth!.sub,
   );
   res.status(201).json({ success: true, data });
+});
+
+/** Recent field visits (GPS check-ins) for the beat / field-visit log. */
+export const listVisits = asyncHandler(async (req: Request, res: Response) => {
+  const { days } = req.query as unknown as { days: number };
+  const storeId = await storeScope(req);
+  const data = await leadService.listVisits(storeId, days);
+  res.json({ success: true, items: data });
 });

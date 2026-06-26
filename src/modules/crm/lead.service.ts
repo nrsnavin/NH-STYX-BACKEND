@@ -241,7 +241,15 @@ export async function listActivities(params: { leadId?: string; customerId?: str
 }
 
 export async function addActivity(
-  input: { type: ActivityType; body: string; leadId?: string; customerId?: string; followUpAt?: string | null },
+  input: {
+    type: ActivityType;
+    body: string;
+    leadId?: string;
+    customerId?: string;
+    followUpAt?: string | null;
+    latitude?: number;
+    longitude?: number;
+  },
   createdById: string,
 ) {
   if (!input.leadId && !input.customerId) {
@@ -254,6 +262,8 @@ export async function addActivity(
       type: input.type,
       body: input.body,
       followUpAt,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
       leadId: input.leadId,
       customerId: input.customerId,
       createdById,
@@ -266,4 +276,27 @@ export async function addActivity(
     await prisma.lead.update({ where: { id: input.leadId }, data: { nextFollowUpAt: followUpAt } });
   }
   return activity;
+}
+
+/**
+ * Recent field visits (VISIT activities) with a GPS check-in, for the beat /
+ * field-visit log. Scoped to the agent's store via the linked lead/customer.
+ */
+export async function listVisits(storeId: string | null, days: number) {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const where: Prisma.ActivityWhereInput = {
+    type: ActivityType.VISIT,
+    createdAt: { gte: since },
+    ...(storeId ? { OR: [{ lead: { storeId } }, { customer: { storeId } }] } : {}),
+  };
+  return prisma.activity.findMany({
+    where,
+    include: {
+      createdBy: { select: { id: true, name: true } },
+      lead: { select: { id: true, shopName: true, city: true } },
+      customer: { select: { id: true, shopName: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
+  });
 }
