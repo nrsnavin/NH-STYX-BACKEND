@@ -19,19 +19,27 @@ async function assertScope(req: Request, leadStoreId: string | null): Promise<vo
 }
 
 export const list = asyncHandler(async (req: Request, res: Response) => {
-  const { page, limit, search, stage, due } = req.query as unknown as {
+  const { page, limit, search, stage, assignedToId, due } = req.query as unknown as {
     page: number;
     limit: number;
     search?: string;
     stage?: LeadStage;
+    assignedToId?: string;
     due?: boolean;
   };
   const storeId = await storeScope(req);
   const [data, counts] = await Promise.all([
-    leadService.listLeads({ page, limit, search, stage, due, storeId }),
+    leadService.listLeads({ page, limit, search, stage, assignedToId, due, storeId }),
     leadService.leadStageCounts(storeId),
   ]);
   res.json({ success: true, ...data, counts });
+});
+
+/** Per-source conversion funnel (which lead sources become paying shops). */
+export const sourceAnalytics = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = await storeScope(req);
+  const data = await leadService.sourceAnalytics(storeId);
+  res.json({ success: true, items: data });
 });
 
 export const getOne = asyncHandler(async (req: Request, res: Response) => {

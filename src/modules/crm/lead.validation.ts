@@ -9,6 +9,7 @@ export const listLeadsSchema = z.object({
     limit: z.coerce.number().int().positive().max(100).default(20),
     search: z.string().optional(),
     stage: z.nativeEnum(LeadStage).optional(),
+    assignedToId: z.string().uuid().optional(),
     due: z
       .enum(['true', 'false'])
       .transform((v) => v === 'true')

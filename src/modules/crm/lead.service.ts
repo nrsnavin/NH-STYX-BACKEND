@@ -16,13 +16,15 @@ export async function listLeads(params: {
   limit: number;
   search?: string;
   stage?: LeadStage;
+  assignedToId?: string;
   due?: boolean;
   storeId?: string | null; // agent scope; null = admin (all)
 }) {
-  const { page, limit, search, stage, due, storeId } = params;
+  const { page, limit, search, stage, assignedToId, due, storeId } = params;
   const where: Prisma.LeadWhereInput = {
     ...(storeId ? { storeId } : {}),
     ...(stage ? { stage } : {}),
+    ...(assignedToId ? { assignedToId } : {}),
     ...(due ? { nextFollowUpAt: { lte: new Date(), not: null } } : {}),
     ...(search
       ? {
@@ -58,6 +60,32 @@ export async function leadStageCounts(storeId?: string | null) {
   const counts: Record<string, number> = {};
   for (const r of rows) counts[r.stage] = r._count._all;
   return counts;
+}
+
+/** Per-source funnel: total leads, won, and win rate — "which sources convert". */
+export async function sourceAnalytics(storeId?: string | null) {
+  const scope: Prisma.LeadWhereInput = storeId ? { storeId } : {};
+  const [totals, won] = await Promise.all([
+    prisma.lead.groupBy({ by: ['source'], where: scope, _count: { _all: true } }),
+    prisma.lead.groupBy({
+      by: ['source'],
+      where: { ...scope, stage: LeadStage.WON },
+      _count: { _all: true },
+    }),
+  ]);
+  const wonBySource = new Map(won.map((w) => [w.source, w._count._all]));
+  return totals
+    .map((t) => {
+      const total = t._count._all;
+      const wonCount = wonBySource.get(t.source) ?? 0;
+      return {
+        source: t.source,
+        total,
+        won: wonCount,
+        conversionRate: total ? Math.round((wonCount / total) * 100) : 0,
+      };
+    })
+    .sort((a, b) => b.total - a.total);
 }
 
 export async function getLead(id: string) {
