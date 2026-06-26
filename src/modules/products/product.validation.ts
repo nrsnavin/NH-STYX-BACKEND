@@ -11,6 +11,15 @@ export const listProductsSchema = z.object({
       .enum(['true', 'false'])
       .transform((v) => v === 'true')
       .optional(),
+    // Customer catalog filter + sort.
+    sort: z.enum(['NEWEST', 'PRICE_ASC', 'PRICE_DESC', 'NAME']).optional(),
+    brand: z.string().optional(),
+    minPricePaise: z.coerce.number().int().nonnegative().optional(),
+    maxPricePaise: z.coerce.number().int().nonnegative().optional(),
+    inStock: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
 

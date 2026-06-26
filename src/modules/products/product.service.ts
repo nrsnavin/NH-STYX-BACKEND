@@ -70,21 +70,37 @@ function productSearchWhere(search?: string): Prisma.ProductWhereInput {
 
 // ---- Store-scoped catalog (customer & agent store view) ---------------------
 
+export type ProductSort = 'NEWEST' | 'PRICE_ASC' | 'PRICE_DESC' | 'NAME';
+
 interface StoreListParams {
   storeId: string;
   page: number;
   limit: number;
   search?: string;
   categoryId?: string;
+  sort?: ProductSort;
+  brand?: string;
+  minPricePaise?: number;
+  maxPricePaise?: number;
+  inStock?: boolean;
 }
+
+const STORE_PRODUCT_ORDER: Record<ProductSort, Prisma.StoreProductOrderByWithRelationInput> = {
+  NEWEST: { createdAt: 'desc' },
+  PRICE_ASC: { pricePaise: 'asc' },
+  PRICE_DESC: { pricePaise: 'desc' },
+  NAME: { product: { name: 'asc' } },
+};
 
 /** Returns products a store actually stocks, with that store's price/stock/tiers. */
 export async function listStoreProducts(params: StoreListParams) {
-  const { storeId, page, limit, search, categoryId } = params;
+  const { storeId, page, limit, search, categoryId, sort, brand, minPricePaise, maxPricePaise, inStock } =
+    params;
 
   const productWhere: Prisma.ProductWhereInput = {
     isActive: true,
     ...productSearchWhere(search),
+    ...(brand ? { brand: { equals: brand, mode: Prisma.QueryMode.insensitive } } : {}),
   };
 
   // Category filter is tree-aware: a parent includes its children.
@@ -102,6 +118,15 @@ export async function listStoreProducts(params: StoreListParams) {
     storeId,
     isActive: true,
     product: productWhere,
+    ...(inStock ? { stockQty: { gt: 0 } } : {}),
+    ...(minPricePaise != null || maxPricePaise != null
+      ? {
+          pricePaise: {
+            ...(minPricePaise != null ? { gte: minPricePaise } : {}),
+            ...(maxPricePaise != null ? { lte: maxPricePaise } : {}),
+          },
+        }
+      : {}),
   };
 
   const [rows, total] = await Promise.all([
@@ -110,7 +135,7 @@ export async function listStoreProducts(params: StoreListParams) {
       include: { product: { include: { category: true, variants: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } }, priceTiers: true },
       skip: (page - 1) * limit,
       take: limit,
-      orderBy: { createdAt: 'desc' },
+      orderBy: STORE_PRODUCT_ORDER[sort ?? 'NEWEST'],
     }),
     prisma.storeProduct.count({ where }),
   ]);
@@ -119,6 +144,21 @@ export async function listStoreProducts(params: StoreListParams) {
     items: rows.map(composeStoreProduct),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
+}
+
+/** Distinct brands a store stocks — powers the catalog's brand filter. */
+export async function listStoreBrands(storeId: string): Promise<string[]> {
+  const rows = await prisma.product.findMany({
+    where: {
+      isActive: true,
+      brand: { not: null },
+      storeProducts: { some: { storeId, isActive: true } },
+    },
+    select: { brand: true },
+    distinct: ['brand'],
+    orderBy: { brand: 'asc' },
+  });
+  return rows.map((r) => r.brand).filter((b): b is string => Boolean(b));
 }
 
 /** A single store-scoped product (catalog + store price/stock/tiers). */

@@ -14,6 +14,7 @@ const router = Router();
 
 router.get('/', authenticate, validate(listProductsSchema), productController.list);
 // Specific routes must precede the `/:id` param route.
+router.get('/brands', authenticate, productController.brands);
 router.get('/best-selling', authenticate, productController.bestSelling);
 router.get('/recently-ordered', authenticate, productController.recentlyOrdered);
 router.get(
