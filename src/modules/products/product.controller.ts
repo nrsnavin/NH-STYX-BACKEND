@@ -153,3 +153,23 @@ export const remove = asyncHandler(async (req: Request, res: Response) => {
   });
   res.json({ success: true, message: 'Product deleted' });
 });
+
+// ---- Reviews ----------------------------------------------------------------
+
+/** A product's rating summary + recent reviews (any signed-in user). */
+export const reviews = asyncHandler(async (req: Request, res: Response) => {
+  const data = await productService.listReviews(req.params.id);
+  res.json({ success: true, ...data });
+});
+
+/** The signed-in shop's own review for a product (to prefill the form). */
+export const myReview = asyncHandler(async (req: Request, res: Response) => {
+  const data = await productService.myReview(req.auth!.sub, req.params.id);
+  res.json({ success: true, data });
+});
+
+/** Create or update the shop's review for a product. */
+export const addReview = asyncHandler(async (req: Request, res: Response) => {
+  const data = await productService.upsertReview(req.auth!.sub, req.params.id, req.body);
+  res.status(201).json({ success: true, data });
+});

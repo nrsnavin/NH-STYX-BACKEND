@@ -20,9 +20,14 @@ export type StoreProductWithTiers = Prisma.StoreProductGetPayload<{
   include: { product: { include: { category: true, variants: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } }; priceTiers: true };
 }>;
 
-export function composeStoreProduct(sp: StoreProductWithTiers) {
+export function composeStoreProduct(
+  sp: StoreProductWithTiers,
+  rating?: { avg: number; count: number },
+) {
   const p = sp.product;
   return {
+    ratingAvg: rating ? Math.round(rating.avg * 10) / 10 : 0,
+    ratingCount: rating?.count ?? 0,
     id: p.id,
     name: p.name,
     slug: p.slug,
@@ -48,6 +53,19 @@ export function composeStoreProduct(sp: StoreProductWithTiers) {
       .sort((a, b) => a.minQty - b.minQty)
       .map((t) => ({ minQty: t.minQty, pricePaise: t.pricePaise })),
   };
+}
+
+/** Average rating + review count for a set of products (for catalog cards). */
+async function ratingsFor(productIds: string[]) {
+  const empty = new Map<string, { avg: number; count: number }>();
+  if (productIds.length === 0) return empty;
+  const rows = await prisma.review.groupBy({
+    by: ['productId'],
+    where: { productId: { in: productIds } },
+    _avg: { rating: true },
+    _count: { _all: true },
+  });
+  return new Map(rows.map((r) => [r.productId, { avg: r._avg.rating ?? 0, count: r._count._all }]));
 }
 
 /**
@@ -140,8 +158,9 @@ export async function listStoreProducts(params: StoreListParams) {
     prisma.storeProduct.count({ where }),
   ]);
 
+  const ratings = await ratingsFor(rows.map((r) => r.productId));
   return {
-    items: rows.map(composeStoreProduct),
+    items: rows.map((r) => composeStoreProduct(r, ratings.get(r.productId))),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
 }
@@ -170,7 +189,8 @@ export async function getStoreProduct(storeId: string, productId: string) {
   if (!sp || !sp.isActive || !sp.product.isActive) {
     throw ApiError.notFound('Product not found in your store');
   }
-  return composeStoreProduct(sp);
+  const rating = (await ratingsFor([productId])).get(productId);
+  return composeStoreProduct(sp, rating);
 }
 
 // ---- Home feed (best-selling / recently ordered) ----------------------------
@@ -189,10 +209,11 @@ export async function storeProductsByIds(storeId: string, productIds: string[]) 
     include: { product: { include: { category: true, variants: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } }, priceTiers: true },
   });
   const byId = new Map(rows.map((r) => [r.productId, r]));
+  const ratings = await ratingsFor(rows.map((r) => r.productId));
   return productIds
     .map((id) => byId.get(id))
     .filter((r): r is StoreProductWithTiers => Boolean(r))
-    .map(composeStoreProduct);
+    .map((r) => composeStoreProduct(r, ratings.get(r.productId)));
 }
 
 /** Best sellers in a store/city — ranked by total quantity ordered there.
@@ -396,5 +417,59 @@ export async function deleteProduct(id: string) {
   // Soft delete — preserves order/cart references; isActive filters hide it.
   await prisma.product.update({ where: { id }, data: { isActive: false } }).catch(() => {
     throw ApiError.notFound('Product not found');
+  });
+}
+
+// ---- Reviews ----------------------------------------------------------------
+
+/** A product's rating summary + recent reviews (newest first). */
+export async function listReviews(productId: string) {
+  const [summary, items] = await Promise.all([
+    prisma.review.aggregate({
+      where: { productId },
+      _avg: { rating: true },
+      _count: { _all: true },
+    }),
+    prisma.review.findMany({
+      where: { productId },
+      include: { customer: { select: { shopName: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    }),
+  ]);
+  return {
+    summary: {
+      avg: Math.round((summary._avg.rating ?? 0) * 10) / 10,
+      count: summary._count._all,
+    },
+    items: items.map((r) => ({
+      id: r.id,
+      rating: r.rating,
+      comment: r.comment,
+      shopName: r.customer.shopName,
+      createdAt: r.createdAt,
+    })),
+  };
+}
+
+/** The signed-in shop's own review for a product, if any (to prefill the form). */
+export async function myReview(customerId: string, productId: string) {
+  return prisma.review.findUnique({
+    where: { productId_customerId: { productId, customerId } },
+  });
+}
+
+/** Create or update the shop's review for a product (one per shop per product). */
+export async function upsertReview(
+  customerId: string,
+  productId: string,
+  input: { rating: number; comment?: string | null },
+) {
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true } });
+  if (!product) throw ApiError.notFound('Product not found');
+  return prisma.review.upsert({
+    where: { productId_customerId: { productId, customerId } },
+    create: { productId, customerId, rating: input.rating, comment: input.comment ?? null },
+    update: { rating: input.rating, comment: input.comment ?? null },
   });
 }

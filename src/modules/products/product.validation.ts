@@ -71,3 +71,11 @@ export const productMovementsSchema = z.object({
     limit: z.coerce.number().int().positive().max(100).default(30),
   }),
 });
+
+export const reviewSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    rating: z.number().int().min(1).max(5),
+    comment: z.string().max(1000).nullable().optional(),
+  }),
+});

@@ -192,7 +192,7 @@ async function retrieveCandidates(
     orderBy: { createdAt: 'desc' },
   });
 
-  const matched = matchedRows.map(composeStoreProduct);
+  const matched = matchedRows.map((sp) => composeStoreProduct(sp));
   const candidates = [...matched];
 
   // Backfill with well-stocked products so vague queries still give the LLM
