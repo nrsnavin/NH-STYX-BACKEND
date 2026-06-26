@@ -11,6 +11,15 @@ export const listProductsSchema = z.object({
       .enum(['true', 'false'])
       .transform((v) => v === 'true')
       .optional(),
+    // Customer catalog filter + sort.
+    sort: z.enum(['NEWEST', 'PRICE_ASC', 'PRICE_DESC', 'NAME']).optional(),
+    brand: z.string().optional(),
+    minPricePaise: z.coerce.number().int().nonnegative().optional(),
+    maxPricePaise: z.coerce.number().int().nonnegative().optional(),
+    inStock: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
   }),
 });
 
@@ -60,5 +69,13 @@ export const productMovementsSchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(30),
+  }),
+});
+
+export const reviewSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    rating: z.number().int().min(1).max(5),
+    comment: z.string().max(1000).nullable().optional(),
   }),
 });

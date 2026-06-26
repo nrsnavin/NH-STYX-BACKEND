@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { authenticate, authorize } from '../../middlewares/auth.middleware';
+import { authenticate, authorize, requireCustomer } from '../../middlewares/auth.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import {
   createProductSchema,
   listProductsSchema,
   productIdSchema,
   productMovementsSchema,
+  reviewSchema,
   updateProductSchema,
 } from './product.validation';
 import * as productController from './product.controller';
@@ -14,6 +15,7 @@ const router = Router();
 
 router.get('/', authenticate, validate(listProductsSchema), productController.list);
 // Specific routes must precede the `/:id` param route.
+router.get('/brands', authenticate, productController.brands);
 router.get('/best-selling', authenticate, productController.bestSelling);
 router.get('/recently-ordered', authenticate, productController.recentlyOrdered);
 router.get(
@@ -23,6 +25,11 @@ router.get(
   validate(productMovementsSchema),
   productController.movements,
 );
+// Reviews — read for any signed-in user; write for the owning customer.
+router.get('/:id/reviews', authenticate, validate(productIdSchema), productController.reviews);
+router.get('/:id/reviews/mine', authenticate, requireCustomer, validate(productIdSchema), productController.myReview);
+router.post('/:id/reviews', authenticate, requireCustomer, validate(reviewSchema), productController.addReview);
+
 router.get('/:id', authenticate, validate(productIdSchema), productController.getOne);
 
 // Staff (admins + agents) can add and edit catalog products; only admins delete.

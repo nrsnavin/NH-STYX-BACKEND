@@ -10,13 +10,19 @@ import { composeStoreVariants } from '../variants/variant.service';
  * the shared catalog for management.
  */
 export const list = asyncHandler(async (req: Request, res: Response) => {
-  const { page, limit, search, categoryId, isActive } = req.query as unknown as {
-    page: number;
-    limit: number;
-    search?: string;
-    categoryId?: string;
-    isActive?: boolean;
-  };
+  const { page, limit, search, categoryId, isActive, sort, brand, minPricePaise, maxPricePaise, inStock } =
+    req.query as unknown as {
+      page: number;
+      limit: number;
+      search?: string;
+      categoryId?: string;
+      isActive?: boolean;
+      sort?: productService.ProductSort;
+      brand?: string;
+      minPricePaise?: number;
+      maxPricePaise?: number;
+      inStock?: boolean;
+    };
 
   if (req.auth?.type === 'CUSTOMER') {
     const storeId = await getCustomerStoreId(req.auth.sub);
@@ -30,6 +36,11 @@ export const list = asyncHandler(async (req: Request, res: Response) => {
       limit,
       search,
       categoryId,
+      sort,
+      brand,
+      minPricePaise,
+      maxPricePaise,
+      inStock,
     });
     res.json({ success: true, ...data });
     return;
@@ -37,6 +48,17 @@ export const list = asyncHandler(async (req: Request, res: Response) => {
 
   const data = await productService.listCatalog({ page, limit, search, categoryId, isActive });
   res.json({ success: true, ...data });
+});
+
+/** Distinct brands the customer's store stocks (powers the catalog filter). */
+export const brands = asyncHandler(async (req: Request, res: Response) => {
+  if (req.auth?.type !== 'CUSTOMER') {
+    res.json({ success: true, items: [] });
+    return;
+  }
+  const storeId = await getCustomerStoreId(req.auth.sub);
+  const items = storeId ? await productService.listStoreBrands(storeId) : [];
+  res.json({ success: true, items });
 });
 
 /** Best sellers in the customer's store/city. Empty for staff / no store. */
@@ -130,4 +152,24 @@ export const remove = asyncHandler(async (req: Request, res: Response) => {
     entityId: req.params.id,
   });
   res.json({ success: true, message: 'Product deleted' });
+});
+
+// ---- Reviews ----------------------------------------------------------------
+
+/** A product's rating summary + recent reviews (any signed-in user). */
+export const reviews = asyncHandler(async (req: Request, res: Response) => {
+  const data = await productService.listReviews(req.params.id);
+  res.json({ success: true, ...data });
+});
+
+/** The signed-in shop's own review for a product (to prefill the form). */
+export const myReview = asyncHandler(async (req: Request, res: Response) => {
+  const data = await productService.myReview(req.auth!.sub, req.params.id);
+  res.json({ success: true, data });
+});
+
+/** Create or update the shop's review for a product. */
+export const addReview = asyncHandler(async (req: Request, res: Response) => {
+  const data = await productService.upsertReview(req.auth!.sub, req.params.id, req.body);
+  res.status(201).json({ success: true, data });
 });
