@@ -57,3 +57,8 @@ export const convertQuotationSchema = z.object({
     addressId: z.string().uuid().optional(),
   }),
 });
+
+export const respondQuotationSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({ action: z.enum(['ACCEPT', 'DECLINE']) }),
+});

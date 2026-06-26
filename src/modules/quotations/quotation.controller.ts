@@ -4,6 +4,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
 import { getStaffStoreId } from '../../utils/storeContext';
 import * as service from './quotation.service';
+import { streamQuotationPdf } from './quotation.pdf';
 
 /** Agents are scoped to their store; admins (null) see all. */
 async function storeScope(req: Request): Promise<string | null> {
@@ -66,4 +67,26 @@ export const convert = asyncHandler(async (req: Request, res: Response) => {
     req.auth!.sub,
   );
   res.status(201).json({ success: true, data });
+});
+
+/** Quotation PDF — staff (store-scoped) or the owning customer. */
+export const pdf = asyncHandler(async (req: Request, res: Response) => {
+  await streamQuotationPdf(req.params.id, req.auth!, res);
+});
+
+// ---- Customer self-service --------------------------------------------------
+
+export const listMine = asyncHandler(async (req: Request, res: Response) => {
+  const items = await service.listForCustomer(req.auth!.sub);
+  res.json({ success: true, items });
+});
+
+export const getMine = asyncHandler(async (req: Request, res: Response) => {
+  const data = await service.getForCustomer(req.auth!.sub, req.params.id);
+  res.json({ success: true, data });
+});
+
+export const respond = asyncHandler(async (req: Request, res: Response) => {
+  const data = await service.respondToQuote(req.auth!.sub, req.params.id, req.body.action);
+  res.json({ success: true, data });
 });

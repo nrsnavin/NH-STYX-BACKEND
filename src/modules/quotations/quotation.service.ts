@@ -171,6 +171,21 @@ async function buildItems(storeId: string, intra: boolean, items: ItemInput[]) {
 
 // ---- Queries ----------------------------------------------------------------
 
+/**
+ * Lazily expire quotes whose validity has lapsed. There's no scheduler, so we
+ * sweep on read: any open (draft/sent) quote past its validUntil flips to
+ * EXPIRED. Accepted/converted/closed quotes are left alone.
+ */
+export async function expireOverdue() {
+  await prisma.quotation.updateMany({
+    where: {
+      status: { in: [QuotationStatus.DRAFT, QuotationStatus.SENT] },
+      validUntil: { lt: new Date(), not: null },
+    },
+    data: { status: QuotationStatus.EXPIRED },
+  });
+}
+
 export async function listQuotations(params: {
   page: number;
   limit: number;
@@ -180,6 +195,7 @@ export async function listQuotations(params: {
   storeId?: string | null; // agent scope; null = admin (all)
 }) {
   const { page, limit, status, search, customerId, storeId } = params;
+  await expireOverdue();
   const where: Prisma.QuotationWhereInput = {
     ...(storeId ? { storeId } : {}),
     ...(status ? { status } : {}),
@@ -209,9 +225,45 @@ export async function listQuotations(params: {
 }
 
 export async function getQuotation(id: string) {
+  await expireOverdue();
   const quote = await prisma.quotation.findUnique({ where: { id }, include: quotationInclude });
   if (!quote) throw ApiError.notFound('Quotation not found');
   return quote;
+}
+
+// ---- Customer self-service --------------------------------------------------
+
+/** The shop's own quotes (everything they've been sent — drafts excluded). */
+export async function listForCustomer(customerId: string) {
+  await expireOverdue();
+  return prisma.quotation.findMany({
+    where: { customerId, status: { not: QuotationStatus.DRAFT } },
+    include: quotationInclude,
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+export async function getForCustomer(customerId: string, id: string) {
+  await expireOverdue();
+  const quote = await prisma.quotation.findUnique({ where: { id }, include: quotationInclude });
+  if (!quote || quote.customerId !== customerId || quote.status === QuotationStatus.DRAFT) {
+    throw ApiError.notFound('Quotation not found');
+  }
+  return quote;
+}
+
+/** A shop accepts or declines a quote it was sent (only while still SENT). */
+export async function respondToQuote(customerId: string, id: string, action: 'ACCEPT' | 'DECLINE') {
+  const quote = await prisma.quotation.findUnique({ where: { id } });
+  if (!quote || quote.customerId !== customerId) throw ApiError.notFound('Quotation not found');
+  if (quote.status !== QuotationStatus.SENT) {
+    throw ApiError.badRequest('This quotation can no longer be responded to');
+  }
+  return prisma.quotation.update({
+    where: { id },
+    data: { status: action === 'ACCEPT' ? QuotationStatus.ACCEPTED : QuotationStatus.DECLINED },
+    include: quotationInclude,
+  });
 }
 
 // ---- Mutations --------------------------------------------------------------
