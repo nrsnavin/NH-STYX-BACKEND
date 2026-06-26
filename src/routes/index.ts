@@ -17,6 +17,7 @@ import auditRoutes from '../modules/audit/audit.routes';
 import wishlistRoutes from '../modules/wishlist/wishlist.routes';
 import couponRoutes from '../modules/coupons/coupon.routes';
 import variantRoutes from '../modules/variants/variant.routes';
+import quotationRoutes from '../modules/quotations/quotation.routes';
 
 const router = Router();
 
@@ -54,5 +55,6 @@ router.use('/audit', auditRoutes);
 router.use('/wishlist', wishlistRoutes);
 router.use('/coupons', couponRoutes);
 router.use('/variants', variantRoutes);
+router.use('/quotations', quotationRoutes);
 
 export default router;

@@ -128,10 +128,11 @@ model User {
   storeId String?
   store   Store?  @relation(fields: [storeId], references: [id])
 
-  assignedLeads      Lead[]     @relation("LeadAssignee")
-  authoredActivities Activity[] @relation("ActivityAuthor")
+  assignedLeads      Lead[]          @relation("LeadAssignee")
+  authoredActivities Activity[]      @relation("ActivityAuthor")
   stockMovements     StockMovement[]
   orderEvents        OrderEvent[]
+  quotations         Quotation[]     @relation("QuotationAuthor")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -179,6 +180,7 @@ model Customer {
   activities        Activity[]
   wishlist          WishlistItem[]
   couponRedemptions CouponRedemption[]
+  quotations        Quotation[]
 
   @@index([phone])
   @@index([storeId])
@@ -215,6 +217,7 @@ model Store {
   leads          Lead[]
   stockMovements StockMovement[]
   coupons        Coupon[]
+  quotations     Quotation[]
 
   @@index([stateCode])
 }
@@ -305,6 +308,7 @@ model Product {
   orderItems     OrderItem[]
   stockMovements StockMovement[]
   wishlistItems  WishlistItem[]
+  quotationItems QuotationItem[]
 
   @@index([categoryId])
 }
@@ -331,6 +335,7 @@ model ProductVariant {
   cartItems      CartItem[]
   orderItems     OrderItem[]
   stockMovements StockMovement[]
+  quotationItems QuotationItem[]
 
   @@index([productId])
 }
@@ -462,9 +467,9 @@ model Order {
   discountPaise Int     @default(0) // coupon discount (post-tax rebate)
   couponCode    String? // code applied at checkout, if any
   deliveryPaise Int     @default(0)
-  cgstPaise     Int @default(0)
-  sgstPaise     Int @default(0)
-  igstPaise     Int @default(0)
+  cgstPaise     Int     @default(0)
+  sgstPaise     Int     @default(0)
+  igstPaise     Int     @default(0)
   totalPaise    Int // grand total payable
 
   // ---- Payment state ----
@@ -494,11 +499,11 @@ model Order {
 }
 
 model OrderItem {
-  id        String  @id @default(uuid())
+  id        String          @id @default(uuid())
   orderId   String
-  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order     Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productId String
-  product   Product @relation(fields: [productId], references: [id])
+  product   Product         @relation(fields: [productId], references: [id])
   // The ordered variant, if any (null = base product).
   variantId String?
   variant   ProductVariant? @relation(fields: [variantId], references: [id])
@@ -578,8 +583,9 @@ model Lead {
   customer   Customer? @relation(fields: [customerId], references: [id])
 
   activities Activity[]
-  createdAt  DateTime   @default(now())
-  updatedAt  DateTime   @updatedAt
+  quotations Quotation[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
 
   @@index([storeId])
   @@index([stage])
@@ -750,4 +756,94 @@ model CouponRedemption {
 
   @@index([couponId])
   @@index([customerId])
+}
+
+// ------------------------------------------------------------
+//  Quotations (sales proposals — negotiable prices, convert to order)
+// ------------------------------------------------------------
+
+enum QuotationStatus {
+  DRAFT // being built, editable
+  SENT // shared with the shop
+  ACCEPTED // shop agreed
+  DECLINED // shop passed
+  EXPIRED // past validUntil
+  CONVERTED // turned into an order
+}
+
+// A priced proposal for a shop (an existing customer or a prospect lead). Lines
+// snapshot a possibly-negotiated unit price; converting one creates a real order
+// honouring those prices (tax is recomputed against the delivery address).
+model Quotation {
+  id          String          @id @default(uuid())
+  quoteNumber String          @unique // e.g. "QUO-2026-00007"
+  status      QuotationStatus @default(DRAFT)
+  title       String?
+  notes       String? // terms / cover note shown on the quote
+  validUntil  DateTime?
+
+  // Recipient: an onboarded customer and/or a pipeline lead (at least one).
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  leadId     String?
+  lead       Lead?     @relation(fields: [leadId], references: [id])
+
+  // Serving store (drives prices) + author.
+  storeId     String?
+  store       Store?  @relation(fields: [storeId], references: [id])
+  createdById String?
+  createdBy   User?   @relation("QuotationAuthor", fields: [createdById], references: [id])
+
+  // GST context snapshot used for the indicative tax on the quote.
+  placeOfSupply   String?
+  sellerStateCode String?
+
+  // Money (integer paise).
+  subtotalPaise Int @default(0)
+  cgstPaise     Int @default(0)
+  sgstPaise     Int @default(0)
+  igstPaise     Int @default(0)
+  discountPaise Int @default(0) // negotiated lump-sum off the total
+  totalPaise    Int @default(0)
+
+  // Set once converted (loose link — kept simple, no Order back-relation).
+  orderId     String? @unique
+  orderNumber String?
+
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  items     QuotationItem[]
+
+  @@index([customerId])
+  @@index([leadId])
+  @@index([storeId])
+  @@index([status])
+}
+
+model QuotationItem {
+  id          String          @id @default(uuid())
+  quotationId String
+  quotation   Quotation       @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product         @relation(fields: [productId], references: [id])
+  variantId   String?
+  variant     ProductVariant? @relation(fields: [variantId], references: [id])
+
+  // Snapshots (the proposed price may differ from the live store price).
+  productName    String
+  variantName    String?
+  hsnCode        String?
+  unit           ProductUnit
+  quantity       Int
+  unitPricePaise Int // proposed (possibly negotiated) unit price, pre-tax
+  gstRatePercent Int
+
+  lineSubtotalPaise Int
+  cgstPaise         Int @default(0)
+  sgstPaise         Int @default(0)
+  igstPaise         Int @default(0)
+  lineTotalPaise    Int
+
+  @@index([quotationId])
+  @@index([productId])
 }

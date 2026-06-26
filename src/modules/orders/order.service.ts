@@ -42,7 +42,7 @@ interface RazorpayCheckout {
   notes: Record<string, string>;
 }
 
-async function nextOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
+export async function nextOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
   const year = new Date().getFullYear();
   // A Postgres sequence (migration `enable_rls`) gives a gap-free, race-free,
   // and RLS-independent counter — a global `order.count()` would be wrong under
