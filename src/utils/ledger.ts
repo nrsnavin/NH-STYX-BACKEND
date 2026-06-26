@@ -11,6 +11,7 @@ export async function recordStockMovement(
     deltaQty: number;
     type: StockMovementType;
     orderId?: string | null;
+    purchaseOrderId?: string | null;
     userId?: string | null;
     reason?: string;
   },
@@ -23,6 +24,7 @@ export async function recordStockMovement(
       deltaQty: input.deltaQty,
       type: input.type,
       orderId: input.orderId ?? null,
+      purchaseOrderId: input.purchaseOrderId ?? null,
       userId: input.userId ?? null,
       reason: input.reason,
     },

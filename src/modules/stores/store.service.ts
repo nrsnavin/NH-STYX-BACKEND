@@ -148,6 +148,8 @@ export async function listStoreInventory(storeId: string, params: InventoryListP
             pricePaise: sp.pricePaise,
             mrpPaise: sp.mrpPaise,
             stockQty: sp.stockQty,
+            reorderLevel: sp.reorderLevel,
+            reorderQty: sp.reorderQty,
             isActive: sp.isActive,
             priceTiers: [...sp.priceTiers]
               .sort((a, b) => a.minQty - b.minQty)
@@ -164,6 +166,8 @@ interface UpsertStoreProductInput {
   pricePaise: number;
   mrpPaise?: number | null;
   stockQty?: number;
+  reorderLevel?: number;
+  reorderQty?: number;
   isActive?: boolean;
   priceTiers?: { minQty: number; pricePaise: number }[];
 }
@@ -193,12 +197,16 @@ export async function upsertStoreProduct(
         pricePaise: input.pricePaise,
         mrpPaise: input.mrpPaise ?? undefined,
         stockQty: input.stockQty ?? 0,
+        reorderLevel: input.reorderLevel ?? 0,
+        reorderQty: input.reorderQty ?? 0,
         isActive: input.isActive ?? true,
       },
       update: {
         pricePaise: input.pricePaise,
         mrpPaise: input.mrpPaise,
         stockQty: input.stockQty,
+        reorderLevel: input.reorderLevel,
+        reorderQty: input.reorderQty,
         isActive: input.isActive,
       },
     });

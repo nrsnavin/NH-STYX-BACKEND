@@ -76,6 +76,8 @@ export const upsertStoreProductSchema = z.object({
     pricePaise: z.number().int().nonnegative(),
     mrpPaise: z.number().int().nonnegative().nullable().optional(),
     stockQty: z.number().int().nonnegative().optional(),
+    reorderLevel: z.number().int().nonnegative().optional(),
+    reorderQty: z.number().int().nonnegative().optional(),
     isActive: z.boolean().optional(),
     priceTiers: z.array(priceTier).optional(),
   }),
