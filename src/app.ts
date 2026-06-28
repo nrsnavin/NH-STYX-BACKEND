@@ -17,12 +17,13 @@ export function createApp(): Application {
 
   // Security & infrastructure middleware.
   app.use(helmet());
-  app.use(
-    cors({
-      origin: env.CORS_ORIGINS,
-      credentials: true,
-    }),
-  );
+ app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  }),
+);
   app.use(compression());
 
   // Webhooks need the RAW body for signature verification, so they are mounted
