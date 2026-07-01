@@ -274,3 +274,55 @@ export async function aiSearch(storeId: string, query: string) {
     items,
   };
 }
+
+// ---- Staff global search (orders / customers / products / leads) ------------
+
+/**
+ * Cross-entity quick search for the ops console. Agents are scoped to their
+ * store for orders, customers and leads; the catalog is global. Each group is
+ * capped small — this powers a header "jump to" box, not a full listing.
+ */
+export async function globalSearch(storeId: string | null, q: string) {
+  const term = q.trim();
+  if (term.length < 2) {
+    return { orders: [], customers: [], products: [], leads: [] };
+  }
+  const ci = { contains: term, mode: Prisma.QueryMode.insensitive };
+  const storeFilter = storeId ? { storeId } : {};
+
+  const [orders, customers, products, leads] = await Promise.all([
+    prisma.order.findMany({
+      where: { ...storeFilter, OR: [{ orderNumber: ci }, { customer: { is: { shopName: ci } } }] },
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        totalPaise: true,
+        createdAt: true,
+        customer: { select: { shopName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 6,
+    }),
+    prisma.customer.findMany({
+      where: { ...storeFilter, isActive: true, OR: [{ shopName: ci }, { phone: ci }, { gstin: ci }] },
+      select: { id: true, shopName: true, phone: true, status: true },
+      orderBy: { shopName: 'asc' },
+      take: 6,
+    }),
+    prisma.product.findMany({
+      where: { isActive: true, OR: [{ name: ci }, { brand: ci }] },
+      select: { id: true, name: true, brand: true, imageUrl: true },
+      orderBy: { name: 'asc' },
+      take: 6,
+    }),
+    prisma.lead.findMany({
+      where: { ...storeFilter, OR: [{ shopName: ci }, { phone: ci }, { contactName: ci }] },
+      select: { id: true, shopName: true, phone: true, stage: true },
+      orderBy: { createdAt: 'desc' },
+      take: 6,
+    }),
+  ]);
+
+  return { orders, customers, products, leads };
+}

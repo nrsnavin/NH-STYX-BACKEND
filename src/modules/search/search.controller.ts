@@ -1,7 +1,14 @@
 import { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { getCustomerStoreId, getStaffStoreId } from '../../utils/storeContext';
-import { aiSearch } from './search.service';
+import { aiSearch, globalSearch } from './search.service';
+
+// Ops console quick search across orders / customers / products / leads.
+export const global = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = req.auth?.role === 'ADMIN' ? null : await getStaffStoreId(req.auth!.sub);
+  const data = await globalSearch(storeId, String(req.query.q ?? ''));
+  res.json({ success: true, data });
+});
 
 export const ai = asyncHandler(async (req: Request, res: Response) => {
   // Search is store-scoped: a customer searches their store, an agent searches
