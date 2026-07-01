@@ -1,4 +1,4 @@
-import { NotificationAudience, NotificationStatus, Prisma } from '@prisma/client';
+import { CustomerStatus, NotificationAudience, NotificationStatus, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 
 /**
@@ -209,4 +209,34 @@ export async function listStaff() {
     orderBy: { createdAt: 'desc' },
     take: 100,
   });
+}
+
+/**
+ * Fan out a staff-composed message to a segment of customers as in-app
+ * notifications. Targets active customers, optionally filtered by status and
+ * store (agents are scoped to their store by the caller).
+ */
+export async function broadcastToCustomers(
+  filter: { storeId?: string | null; status?: CustomerStatus },
+  message: { title: string; body: string },
+): Promise<{ sent: number }> {
+  const where: Prisma.CustomerWhereInput = {
+    isActive: true,
+    ...(filter.status ? { status: filter.status } : {}),
+    ...(filter.storeId ? { storeId: filter.storeId } : {}),
+  };
+  const customers = await prisma.customer.findMany({ where, select: { id: true } });
+  if (customers.length === 0) return { sent: 0 };
+
+  await prisma.notification.createMany({
+    data: customers.map((c) => ({
+      audience: NotificationAudience.CUSTOMER,
+      customerId: c.id,
+      event: 'BROADCAST',
+      title: message.title,
+      body: message.body,
+      status: NotificationStatus.SENT,
+    })),
+  });
+  return { sent: customers.length };
 }
