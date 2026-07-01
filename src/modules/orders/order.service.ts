@@ -880,6 +880,35 @@ export async function updateOrderStatus(id: string, status: OrderStatus, actorId
   });
 }
 
+/**
+ * Apply a fulfilment status to many orders at once (e.g. mark a batch PACKED).
+ * Cancellations and returns are refused here — those must go through their own
+ * flows so stock and refunds are handled. Already cancelled/returned orders and
+ * no-op transitions are skipped.
+ */
+export async function bulkUpdateOrderStatus(ids: string[], status: OrderStatus, actorId?: string) {
+  if (status === OrderStatus.CANCELLED || status === OrderStatus.RETURNED) {
+    throw ApiError.badRequest(
+      'Cancel or return orders individually so stock and refunds are handled',
+    );
+  }
+  return tenantTransaction(async (tx) => {
+    const orders = await tx.order.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, status: true },
+    });
+    let updated = 0;
+    for (const o of orders) {
+      if (o.status === OrderStatus.CANCELLED || o.status === OrderStatus.RETURNED) continue;
+      if (o.status === status) continue;
+      await tx.order.update({ where: { id: o.id }, data: { status } });
+      await recordOrderEvent(tx, o.id, status, { userId: actorId, note: 'Bulk update' });
+      updated++;
+    }
+    return { requested: ids.length, matched: orders.length, updated };
+  });
+}
+
 /** Recompute amountPaid/Due + paymentStatus from PAID payments; auto-confirm. */
 async function recompute(tx: Prisma.TransactionClient, orderId: string) {
   const order = await tx.order.findUniqueOrThrow({

@@ -80,6 +80,19 @@ export const updateStatus = asyncHandler(async (req: Request, res: Response) => 
   res.json({ success: true, data });
 });
 
+// Apply a fulfilment status to many orders at once.
+export const bulkStatus = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.bulkUpdateOrderStatus(req.body.ids, req.body.status, req.auth!.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'order.bulk_status',
+    entity: 'Order',
+    meta: { status: req.body.status, count: data.updated },
+  });
+  res.json({ success: true, data });
+});
+
 export const recordPayment = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.recordPayment(req.params.id, req.body);
   await audit({

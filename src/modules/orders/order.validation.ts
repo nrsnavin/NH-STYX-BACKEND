@@ -49,6 +49,13 @@ export const updateOrderStatusSchema = z.object({
   body: z.object({ status: z.nativeEnum(OrderStatus) }),
 });
 
+export const bulkOrderStatusSchema = z.object({
+  body: z.object({
+    ids: z.array(z.string().uuid()).min(1, 'Select at least one order').max(200),
+    status: z.nativeEnum(OrderStatus),
+  }),
+});
+
 export const recordPaymentSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({

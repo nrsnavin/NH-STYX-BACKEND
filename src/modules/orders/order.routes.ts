@@ -6,6 +6,7 @@ import {
 } from '../../middlewares/auth.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import {
+  bulkOrderStatusSchema,
   cancelOrderSchema,
   createOrderSchema,
   listOrdersSchema,
@@ -30,6 +31,15 @@ router.post(
   authorize('ADMIN', 'AGENT'),
   validate(staffOrderSchema),
   orderController.createForCustomer,
+);
+
+// Bulk fulfilment status change (literal path — before /:id routes).
+router.post(
+  '/bulk-status',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(bulkOrderStatusSchema),
+  orderController.bulkStatus,
 );
 
 // Listing/detail — role-aware (customer → own, staff → all).
