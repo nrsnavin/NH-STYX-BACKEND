@@ -23,6 +23,7 @@ import returnRoutes from '../modules/returns/return.routes';
 import notificationRoutes from '../modules/notifications/notification.routes';
 import reportRoutes from '../modules/reports/report.routes';
 import settingsRoutes from '../modules/settings/settings.routes';
+import bundleRoutes from '../modules/bundles/bundle.routes';
 
 const router = Router();
 
@@ -66,5 +67,6 @@ router.use('/returns', returnRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/reports', reportRoutes);
 router.use('/settings', settingsRoutes);
+router.use('/bundles', bundleRoutes);
 
 export default router;

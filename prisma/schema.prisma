@@ -316,6 +316,7 @@ model Product {
   quotationItems     QuotationItem[]
   purchaseOrderItems PurchaseOrderItem[]
   reviews            Review[]
+  bundleItems        BundleItem[]
 
   @@index([categoryId])
 }
@@ -1078,4 +1079,32 @@ model Setting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+// A curated set of products sold together (e.g. a "starter kit"). Bundles are a
+// convenience for bulk buyers — adding one expands into its component products
+// in the cart at each store's own price. Not a stock-keeping unit itself.
+model Bundle {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items BundleItem[]
+}
+
+model BundleItem {
+  id        String  @id @default(uuid())
+  bundleId  String
+  bundle    Bundle  @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int     @default(1)
+
+  @@unique([bundleId, productId])
+  @@index([bundleId])
 }
