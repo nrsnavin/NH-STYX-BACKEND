@@ -73,6 +73,13 @@ router.post(
   orderController.ship,
 );
 router.post(
+  '/:id/book-shipment',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(orderIdSchema),
+  orderController.bookShipment,
+);
+router.post(
   '/:id/deliver',
   authenticate,
   authorize('ADMIN', 'AGENT'),

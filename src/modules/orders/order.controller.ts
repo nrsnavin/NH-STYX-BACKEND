@@ -112,6 +112,20 @@ export const ship = asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true, data });
 });
 
+// Staff auto-books a shipment with the configured courier → SHIPPED.
+export const bookShipment = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.bookShipment(req.params.id, req.auth!.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'order.book_shipment',
+    entity: 'Order',
+    entityId: req.params.id,
+    meta: { trackingNumber: data.order.trackingNumber, courierName: data.order.courierName },
+  });
+  res.json({ success: true, data });
+});
+
 // Staff marks the order delivered.
 export const deliver = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.markDelivered(req.params.id, req.auth!.sub);

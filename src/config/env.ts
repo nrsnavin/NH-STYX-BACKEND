@@ -58,6 +58,13 @@ const envSchema = z.object({
   SHIPPING_API_URL: z.string().optional(),
   SHIPPING_API_TOKEN: z.string().optional(),
 
+  // Courier booking (optional). When COURIER_API_URL is set, staff can auto-book
+  // a shipment (POST order + consignee → AWB / label); otherwise they enter the
+  // AWB manually. COURIER_NAME labels the shipment when the API omits it.
+  COURIER_API_URL: z.string().optional(),
+  COURIER_API_TOKEN: z.string().optional(),
+  COURIER_NAME: z.string().default('Delhivery'),
+
   // Anthropic (optional — AI search falls back to keyword search when unset).
   ANTHROPIC_API_KEY: z.string().optional(),
   AI_SEARCH_MODEL: z.string().default('claude-opus-4-8'),

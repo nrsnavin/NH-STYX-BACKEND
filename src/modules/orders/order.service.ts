@@ -1216,3 +1216,93 @@ export async function getOrderTracking(
   }
   return base;
 }
+
+interface CourierBooking {
+  awb: string;
+  courierName: string;
+  trackingUrl?: string;
+  labelUrl?: string;
+}
+
+/** Books a shipment with the configured courier (env-gated). Throws a clear
+ *  error when no courier API is configured — staff then enter the AWB manually. */
+async function createCourierShipment(order: {
+  orderNumber: string;
+  shipName: string;
+  shipPhone: string;
+  shipLine1: string;
+  shipLine2: string | null;
+  shipCity: string;
+  shipState: string;
+  shipPincode: string;
+  amountDuePaise: number;
+  paymentStatus: OrderPaymentStatus;
+}): Promise<CourierBooking> {
+  if (!env.COURIER_API_URL) {
+    throw ApiError.badRequest(
+      'Courier integration is not configured. Set COURIER_API_URL, or enter the AWB manually via "Mark shipped".',
+    );
+  }
+  const resp = await fetch(env.COURIER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(env.COURIER_API_TOKEN ? { Authorization: `Bearer ${env.COURIER_API_TOKEN}` } : {}),
+    },
+    body: JSON.stringify({
+      orderNumber: order.orderNumber,
+      consignee: {
+        name: order.shipName,
+        phone: order.shipPhone,
+        line1: order.shipLine1,
+        line2: order.shipLine2,
+        city: order.shipCity,
+        state: order.shipState,
+        pincode: order.shipPincode,
+      },
+      // Collect the balance on delivery for orders that aren't fully paid.
+      codAmountPaise: order.paymentStatus === OrderPaymentStatus.PAID ? 0 : order.amountDuePaise,
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    logger.error({ status: resp.status, text }, 'courier booking failed');
+    throw ApiError.badRequest('Courier booking failed — please retry or enter the AWB manually');
+  }
+  const data = (await resp.json()) as {
+    awb?: string;
+    trackingNumber?: string;
+    courierName?: string;
+    trackingUrl?: string;
+    labelUrl?: string;
+  };
+  const awb = data.awb ?? data.trackingNumber;
+  if (!awb) throw ApiError.badRequest('Courier did not return an AWB');
+  return {
+    awb,
+    courierName: data.courierName ?? env.COURIER_NAME,
+    trackingUrl: data.trackingUrl,
+    labelUrl: data.labelUrl,
+  };
+}
+
+/** Auto-books a shipment with the courier, then marks the order SHIPPED with the
+ *  returned AWB. Returns the updated order plus any shipping-label URL. */
+export async function bookShipment(id: string, actorId?: string) {
+  const order = await prisma.order.findUnique({ where: { id } });
+  if (!order) throw ApiError.notFound('Order not found');
+  if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.RETURNED) {
+    throw ApiError.badRequest(`Cannot ship a ${order.status.toLowerCase()} order`);
+  }
+  const booking = await createCourierShipment(order);
+  const updated = await shipOrder(
+    id,
+    {
+      courierName: booking.courierName,
+      trackingNumber: booking.awb,
+      trackingUrl: booking.trackingUrl,
+    },
+    actorId,
+  );
+  return { order: updated, labelUrl: booking.labelUrl ?? null };
+}
