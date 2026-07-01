@@ -206,6 +206,33 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
     : [];
   const svByVariant = new Map(storeVariants.map((sv) => [sv.variantId, sv]));
 
+  // A product/variant can be delisted after it was added to the cart. The cart
+  // view already hides such lines, so checkout drops them too (rather than let
+  // an invisible stale line permanently block the order) and proceeds with the
+  // items the shop can actually see. Only a fully-unavailable cart is rejected.
+  const isUnavailable = (item: (typeof cart.items)[number]) => {
+    if (!item.product.isActive) return true;
+    if (item.variantId) {
+      const sv = svByVariant.get(item.variantId);
+      return !sv || !sv.isActive || !item.variant?.isActive;
+    }
+    const sp = spByProduct.get(item.productId);
+    return !sp || !sp.isActive;
+  };
+  const unavailable = cart.items.filter(isUnavailable);
+  const lineItems = cart.items.filter((item) => !isUnavailable(item));
+  if (unavailable.length > 0) {
+    await prisma.cartItem.deleteMany({ where: { id: { in: unavailable.map((i) => i.id) } } });
+  }
+  if (lineItems.length === 0) {
+    const names = unavailable
+      .map((i) => `${i.product.name}${i.variant ? ` (${i.variant.name})` : ''}`)
+      .join(', ');
+    throw ApiError.badRequest(
+      `The item(s) in your cart are no longer available and have been removed: ${names}.`,
+    );
+  }
+
   // GST seller side = the fulfilling store's state (multi-state ready).
   const intra = isIntraState(address.stateCode, address.state, store.stateCode, store.state);
 
@@ -214,25 +241,19 @@ export async function createOrder(customerId: string, input: CreateOrderInput) {
   let sgstTotal = 0;
   let igstTotal = 0;
 
-  const orderItems = cart.items.map((item) => {
+  const orderItems = lineItems.map((item) => {
     const { product, quantity } = item;
 
     let unitPricePaise: number;
     let stockQty: number;
     let variantName: string | null = null;
     if (item.variantId) {
-      const sv = svByVariant.get(item.variantId);
-      if (!product.isActive || !sv || !sv.isActive || !item.variant?.isActive) {
-        throw ApiError.badRequest(`${product.name} (${item.variant?.name ?? 'option'}) is no longer available`);
-      }
+      const sv = svByVariant.get(item.variantId)!;
       unitPricePaise = sv.pricePaise;
       stockQty = sv.stockQty;
       variantName = item.variant?.name ?? null;
     } else {
-      const sp = spByProduct.get(item.productId);
-      if (!product.isActive || !sp || !sp.isActive) {
-        throw ApiError.badRequest(`${product.name} is no longer available`);
-      }
+      const sp = spByProduct.get(item.productId)!;
       unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, quantity);
       stockQty = sp.stockQty;
     }
