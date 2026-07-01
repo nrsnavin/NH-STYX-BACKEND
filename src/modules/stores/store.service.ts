@@ -420,6 +420,97 @@ export async function stockTake(storeId: string, input: StockTakeInput, actorId?
   });
 }
 
+interface TransferStockInput {
+  toStoreId: string;
+  productId: string;
+  quantity: number;
+  reason?: string;
+}
+
+/**
+ * Move stock of one product from one store to another. Records a paired ledger
+ * entry (out of the source, into the destination) atomically. If the
+ * destination doesn't stock the product yet, it's created at the source's price.
+ */
+export async function transferStock(
+  fromStoreId: string,
+  input: TransferStockInput,
+  actorId?: string,
+) {
+  if (fromStoreId === input.toStoreId) {
+    throw ApiError.badRequest('Source and destination stores must be different');
+  }
+  const [fromStore, toStore, product] = await Promise.all([
+    prisma.store.findUnique({ where: { id: fromStoreId } }),
+    prisma.store.findUnique({ where: { id: input.toStoreId } }),
+    prisma.product.findUnique({ where: { id: input.productId } }),
+  ]);
+  if (!fromStore) throw ApiError.notFound('Source store not found');
+  if (!toStore) throw ApiError.notFound('Destination store not found');
+  if (!product) throw ApiError.notFound('Product not found');
+
+  const suffix = input.reason?.trim() ? ` — ${input.reason.trim()}` : '';
+
+  return tenantTransaction(async (tx) => {
+    const source = await tx.storeProduct.findUnique({
+      where: { storeId_productId: { storeId: fromStoreId, productId: input.productId } },
+    });
+    if (!source || !source.isActive) {
+      throw ApiError.badRequest(`${product.name} is not stocked at ${fromStore.name}`);
+    }
+    if (source.stockQty < input.quantity) {
+      throw ApiError.badRequest(`Only ${source.stockQty} in stock at ${fromStore.name}`);
+    }
+
+    // Out of the source.
+    await tx.storeProduct.update({
+      where: { id: source.id },
+      data: { stockQty: { decrement: input.quantity } },
+    });
+    await recordStockMovement(tx, {
+      storeId: fromStoreId,
+      productId: input.productId,
+      deltaQty: -input.quantity,
+      type: StockMovementType.ADJUSTMENT,
+      userId: actorId,
+      reason: `Transfer to ${toStore.name}${suffix}`,
+    });
+
+    // Into the destination (create at the source's price if not yet stocked).
+    const existingDest = await tx.storeProduct.findUnique({
+      where: { storeId_productId: { storeId: input.toStoreId, productId: input.productId } },
+    });
+    const dest = await tx.storeProduct.upsert({
+      where: { storeId_productId: { storeId: input.toStoreId, productId: input.productId } },
+      create: {
+        storeId: input.toStoreId,
+        productId: input.productId,
+        pricePaise: source.pricePaise,
+        mrpPaise: source.mrpPaise ?? undefined,
+        stockQty: input.quantity,
+        isActive: true,
+      },
+      update: { stockQty: { increment: input.quantity } },
+    });
+    await recordStockMovement(tx, {
+      storeId: input.toStoreId,
+      productId: input.productId,
+      deltaQty: input.quantity,
+      type: StockMovementType.ADJUSTMENT,
+      userId: actorId,
+      reason: `Transfer from ${fromStore.name}${suffix}`,
+    });
+
+    return {
+      quantity: input.quantity,
+      productName: product.name,
+      createdDestination: !existingDest,
+      from: { storeId: fromStoreId, name: fromStore.name, stockQty: source.stockQty - input.quantity },
+      to: { storeId: input.toStoreId, name: toStore.name, stockQty: dest.stockQty },
+    };
+  });
+}
+
 /** The stock movement ledger for a store (optionally one product). */
 export async function listStockMovements(
   storeId: string,

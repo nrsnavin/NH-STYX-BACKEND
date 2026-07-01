@@ -15,6 +15,7 @@ import {
   stockTakeSchema,
   storeIdSchema,
   storeProductIdSchema,
+  transferStockSchema,
   updateStoreSchema,
   upsertStoreProductSchema,
 } from './store.validation';
@@ -67,6 +68,14 @@ router.post(
   authorize('ADMIN', 'AGENT'),
   validate(stockTakeSchema),
   storeController.stockTake,
+);
+// Inter-store transfer (admin coordinates across stores).
+router.post(
+  '/:id/transfer',
+  authenticate,
+  authorize('ADMIN'),
+  validate(transferStockSchema),
+  storeController.transfer,
 );
 router.put(
   '/:id/inventory/:productId',

@@ -123,6 +123,20 @@ export const stockTake = asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true, data });
 });
 
+// Move stock of a product from this store to another (admin only).
+export const transfer = asyncHandler(async (req: Request, res: Response) => {
+  const data = await storeService.transferStock(req.params.id, req.body, req.auth?.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'stock.transfer',
+    entity: 'StoreProduct',
+    entityId: req.body.productId,
+    meta: { fromStoreId: req.params.id, toStoreId: req.body.toStoreId, quantity: req.body.quantity },
+  });
+  res.json({ success: true, data });
+});
+
 export const movements = asyncHandler(async (req: Request, res: Response) => {
   await assertStoreScope(req, req.params.id);
   const { productId, page, limit } = req.query as unknown as {

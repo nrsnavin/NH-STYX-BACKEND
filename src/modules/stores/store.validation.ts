@@ -105,6 +105,16 @@ export const adjustStockSchema = z.object({
     }),
 });
 
+export const transferStockSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    toStoreId: z.string().uuid(),
+    productId: z.string().uuid(),
+    quantity: z.number().int().positive(),
+    reason: z.string().max(200).optional(),
+  }),
+});
+
 export const stockTakeSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({
