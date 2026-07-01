@@ -21,6 +21,7 @@ import quotationRoutes from '../modules/quotations/quotation.routes';
 import purchasingRoutes from '../modules/purchasing/purchasing.routes';
 import returnRoutes from '../modules/returns/return.routes';
 import notificationRoutes from '../modules/notifications/notification.routes';
+import reportRoutes from '../modules/reports/report.routes';
 
 const router = Router();
 
@@ -62,5 +63,6 @@ router.use('/quotations', quotationRoutes);
 router.use('/purchasing', purchasingRoutes);
 router.use('/returns', returnRoutes);
 router.use('/notifications', notificationRoutes);
+router.use('/reports', reportRoutes);
 
 export default router;
