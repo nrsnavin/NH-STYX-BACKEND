@@ -13,6 +13,7 @@ import { computeLineTax, isIntraState, resolveUnitPrice } from '../../utils/pric
 import { recordOrderEvent, recordStockMovement } from '../../utils/ledger';
 import { getStaffStoreId } from '../../utils/storeContext';
 import { nextOrderNumber } from '../orders/order.service';
+import { notifyQuotationSent } from '../notifications/notification.service';
 
 const quotationInclude = {
   customer: {
@@ -390,7 +391,20 @@ export async function setStatus(id: string, status: QuotationStatus) {
   if (status === QuotationStatus.CONVERTED) {
     throw ApiError.badRequest('Use convert to turn a quotation into an order');
   }
-  return prisma.quotation.update({ where: { id }, data: { status }, include: quotationInclude });
+  const updated = await prisma.quotation.update({
+    where: { id },
+    data: { status },
+    include: quotationInclude,
+  });
+  // Ping the customer when a quote is first sent to them.
+  if (status === QuotationStatus.SENT && existing.status !== QuotationStatus.SENT) {
+    await notifyQuotationSent({
+      id: updated.id,
+      customerId: updated.customerId,
+      quoteNumber: updated.quoteNumber,
+    });
+  }
+  return updated;
 }
 
 /**

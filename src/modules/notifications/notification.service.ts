@@ -211,6 +211,26 @@ export async function listStaff() {
   });
 }
 
+/** Ping a customer that a price quote has been sent to them. No-op for quotes
+ *  raised against a prospect lead (no customer account to notify). */
+export async function notifyQuotationSent(quote: {
+  id: string;
+  customerId: string | null;
+  quoteNumber: string;
+}): Promise<void> {
+  if (!quote.customerId) return;
+  await prisma.notification.create({
+    data: {
+      audience: NotificationAudience.CUSTOMER,
+      customerId: quote.customerId,
+      event: 'QUOTATION_SENT',
+      title: `New quote ${quote.quoteNumber}`,
+      body: 'Your shop has a new price quote to review. Open Quotations to view and accept it.',
+      status: NotificationStatus.SENT,
+    },
+  });
+}
+
 /**
  * Fan out a staff-composed message to a segment of customers as in-app
  * notifications. Targets active customers, optionally filtered by status and
