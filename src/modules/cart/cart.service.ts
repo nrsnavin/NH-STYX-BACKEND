@@ -175,3 +175,13 @@ export async function clearCart(customerId: string) {
   await prisma.cartItem.deleteMany({ where: { cartId } });
   return getCart(customerId);
 }
+
+/**
+ * ADMIN maintenance: empties EVERY customer's cart. Runs on the trusted path
+ * (no customer RLS context), so the delete spans all carts. Returns the number
+ * of lines removed.
+ */
+export async function clearAllCarts(): Promise<number> {
+  const { count } = await prisma.cartItem.deleteMany({});
+  return count;
+}

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
+import { audit } from '../../utils/audit';
 import * as cartService from './cart.service';
 
 export const get = asyncHandler(async (req: Request, res: Response) => {
@@ -39,4 +40,17 @@ export const removeItem = asyncHandler(async (req: Request, res: Response) => {
 export const clear = asyncHandler(async (req: Request, res: Response) => {
   const data = await cartService.clearCart(req.auth!.sub);
   res.json({ success: true, data });
+});
+
+/** ADMIN: empties every customer's cart (maintenance / catalog reset). */
+export const clearAll = asyncHandler(async (req: Request, res: Response) => {
+  const removed = await cartService.clearAllCarts();
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'cart.clear_all',
+    entity: 'Cart',
+    meta: { removed },
+  });
+  res.json({ success: true, removed });
 });

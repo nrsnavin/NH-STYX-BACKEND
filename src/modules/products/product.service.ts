@@ -414,10 +414,14 @@ export async function updateProduct(
 }
 
 export async function deleteProduct(id: string) {
-  // Soft delete — preserves order/cart references; isActive filters hide it.
+  // Soft delete — preserves order references; isActive filters hide it.
   await prisma.product.update({ where: { id }, data: { isActive: false } }).catch(() => {
     throw ApiError.notFound('Product not found');
   });
+  // Purge it (base product + any variant lines) from EVERY shopper's cart so a
+  // hidden product can't sit in carts or be checked out. Runs on the trusted
+  // admin path (no customer RLS context) so it spans all carts.
+  await prisma.cartItem.deleteMany({ where: { productId: id } });
 }
 
 // ---- Reviews ----------------------------------------------------------------

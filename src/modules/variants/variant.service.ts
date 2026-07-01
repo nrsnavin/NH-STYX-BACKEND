@@ -108,6 +108,8 @@ export async function deleteVariant(id: string) {
     .catch(() => {
       throw ApiError.notFound('Variant not found');
     });
+  // Drop this variant from every shopper's cart (trusted admin path).
+  await prisma.cartItem.deleteMany({ where: { variantId: id } });
 }
 
 // ---- Per-store inventory (admin / store agent) -------------------------------
