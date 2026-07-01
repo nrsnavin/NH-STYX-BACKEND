@@ -312,6 +312,114 @@ export async function importInventory(storeId: string, csv: string, actorId?: st
   return result;
 }
 
+// ---- Stock adjustments & stock-take -----------------------------------------
+
+interface AdjustStockInput {
+  mode: 'delta' | 'set';
+  quantity: number; // delta → signed change; set → the new absolute count
+  reason?: string;
+}
+
+/**
+ * Adjust one store-product's stock and ledger the change as an ADJUSTMENT.
+ * `delta` applies a signed change (damage, shrinkage, found stock); `set`
+ * records the outcome of a physical count. The product must already be stocked.
+ */
+export async function adjustStock(
+  storeId: string,
+  productId: string,
+  input: AdjustStockInput,
+  actorId?: string,
+) {
+  return tenantTransaction(async (tx) => {
+    const sp = await tx.storeProduct.findUnique({
+      where: { storeId_productId: { storeId, productId } },
+      include: { product: { select: { name: true } } },
+    });
+    if (!sp) throw ApiError.badRequest('Add this product to the store before adjusting its stock');
+
+    const before = sp.stockQty;
+    const after = input.mode === 'set' ? input.quantity : before + input.quantity;
+    if (after < 0) {
+      throw ApiError.badRequest(`Adjustment would drop stock below zero (currently ${before})`);
+    }
+    const delta = after - before;
+    if (delta === 0) return { storeProduct: sp, before, after, delta };
+
+    const updated = await tx.storeProduct.update({
+      where: { id: sp.id },
+      data: { stockQty: after },
+    });
+    await recordStockMovement(tx, {
+      storeId,
+      productId,
+      deltaQty: delta,
+      type: StockMovementType.ADJUSTMENT,
+      userId: actorId,
+      reason: input.reason?.trim() || (input.mode === 'set' ? 'Stock count' : 'Manual adjustment'),
+    });
+    return { storeProduct: updated, before, after, delta };
+  });
+}
+
+interface StockTakeInput {
+  reason?: string;
+  counts: { productId: string; countedQty: number }[];
+}
+
+/**
+ * Reconcile physically-counted quantities against system stock — records an
+ * ADJUSTMENT for every product whose count differs. Products not stocked in the
+ * store are skipped and reported back.
+ */
+export async function stockTake(storeId: string, input: StockTakeInput, actorId?: string) {
+  const note = input.reason?.trim() ? `Stock take — ${input.reason.trim()}` : 'Stock take';
+  return tenantTransaction(async (tx) => {
+    const lines: {
+      productId: string;
+      name: string;
+      before: number;
+      after: number;
+      delta: number;
+    }[] = [];
+    let unchanged = 0;
+    const skipped: string[] = [];
+
+    for (const c of input.counts) {
+      const sp = await tx.storeProduct.findUnique({
+        where: { storeId_productId: { storeId, productId: c.productId } },
+        include: { product: { select: { name: true } } },
+      });
+      if (!sp) {
+        skipped.push(c.productId);
+        continue;
+      }
+      const delta = c.countedQty - sp.stockQty;
+      if (delta === 0) {
+        unchanged++;
+        continue;
+      }
+      await tx.storeProduct.update({ where: { id: sp.id }, data: { stockQty: c.countedQty } });
+      await recordStockMovement(tx, {
+        storeId,
+        productId: c.productId,
+        deltaQty: delta,
+        type: StockMovementType.ADJUSTMENT,
+        userId: actorId,
+        reason: note,
+      });
+      lines.push({
+        productId: c.productId,
+        name: sp.product.name,
+        before: sp.stockQty,
+        after: c.countedQty,
+        delta,
+      });
+    }
+    return { adjusted: lines.length, unchanged, skipped, lines };
+  });
+}
+
 /** The stock movement ledger for a store (optionally one product). */
 export async function listStockMovements(
   storeId: string,

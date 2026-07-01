@@ -87,6 +87,40 @@ export const storeProductIdSchema = z.object({
   params: z.object({ id: z.string().uuid(), productId: z.string().uuid() }),
 });
 
+export const adjustStockSchema = z.object({
+  params: z.object({ id: z.string().uuid(), productId: z.string().uuid() }),
+  body: z
+    .object({
+      mode: z.enum(['delta', 'set']),
+      quantity: z.number().int(),
+      reason: z.string().max(200).optional(),
+    })
+    .refine((b) => b.mode !== 'set' || b.quantity >= 0, {
+      message: 'Counted quantity cannot be negative',
+      path: ['quantity'],
+    })
+    .refine((b) => b.mode !== 'delta' || b.quantity !== 0, {
+      message: 'Enter a non-zero adjustment',
+      path: ['quantity'],
+    }),
+});
+
+export const stockTakeSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({
+    reason: z.string().max(200).optional(),
+    counts: z
+      .array(
+        z.object({
+          productId: z.string().uuid(),
+          countedQty: z.number().int().nonnegative(),
+        }),
+      )
+      .min(1, 'Add at least one counted product')
+      .max(500),
+  }),
+});
+
 export const assignAgentSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({ userId: z.string().uuid() }),

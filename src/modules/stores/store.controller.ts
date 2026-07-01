@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
+import { audit } from '../../utils/audit';
 import { getStaffStoreId } from '../../utils/storeContext';
 import * as storeService from './store.service';
 
@@ -85,6 +86,41 @@ export const removeProduct = asyncHandler(async (req: Request, res: Response) =>
   await assertStoreScope(req, req.params.id);
   await storeService.removeStoreProduct(req.params.id, req.params.productId);
   res.json({ success: true, message: 'Product removed from store' });
+});
+
+// Adjust a single product's stock (correction / physical count) with a reason.
+export const adjustStock = asyncHandler(async (req: Request, res: Response) => {
+  await assertStoreScope(req, req.params.id);
+  const data = await storeService.adjustStock(
+    req.params.id,
+    req.params.productId,
+    req.body,
+    req.auth?.sub,
+  );
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'stock.adjust',
+    entity: 'StoreProduct',
+    entityId: req.params.productId,
+    meta: { storeId: req.params.id, mode: req.body.mode, delta: data.delta, reason: req.body.reason },
+  });
+  res.json({ success: true, data });
+});
+
+// Reconcile counted quantities against system stock (bulk physical count).
+export const stockTake = asyncHandler(async (req: Request, res: Response) => {
+  await assertStoreScope(req, req.params.id);
+  const data = await storeService.stockTake(req.params.id, req.body, req.auth?.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'stock.take',
+    entity: 'Store',
+    entityId: req.params.id,
+    meta: { adjusted: data.adjusted, unchanged: data.unchanged, skipped: data.skipped.length },
+  });
+  res.json({ success: true, data });
 });
 
 export const movements = asyncHandler(async (req: Request, res: Response) => {

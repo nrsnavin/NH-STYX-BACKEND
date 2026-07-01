@@ -4,6 +4,7 @@ import { authenticate, authorize } from '../../middlewares/auth.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import {
   addServiceAreaSchema,
+  adjustStockSchema,
   agentUserIdSchema,
   areaIdSchema,
   assignAgentSchema,
@@ -11,6 +12,7 @@ import {
   listInventorySchema,
   listMovementsSchema,
   listStoresSchema,
+  stockTakeSchema,
   storeIdSchema,
   storeProductIdSchema,
   updateStoreSchema,
@@ -50,6 +52,21 @@ router.post(
   validate(storeIdSchema),
   csvUpload.single('file'),
   storeController.importInventory,
+);
+// Stock adjustment (single product) + bulk stock-take (physical count).
+router.post(
+  '/:id/inventory/:productId/adjust',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(adjustStockSchema),
+  storeController.adjustStock,
+);
+router.post(
+  '/:id/stock-take',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(stockTakeSchema),
+  storeController.stockTake,
 );
 router.put(
   '/:id/inventory/:productId',
