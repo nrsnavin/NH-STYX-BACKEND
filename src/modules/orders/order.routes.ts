@@ -34,6 +34,7 @@ router.post(
 // Listing/detail — role-aware (customer → own, staff → all).
 router.get('/', authenticate, validate(listOrdersSchema), orderController.list);
 router.get('/:id', authenticate, validate(orderIdSchema), orderController.getOne);
+router.get('/:id/tracking', authenticate, validate(orderIdSchema), orderController.tracking);
 router.get('/:id/invoice', authenticate, validate(orderIdSchema), orderController.invoice);
 
 // (Re)issue a Razorpay checkout for an existing unpaid online order (pay-now

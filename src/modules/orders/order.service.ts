@@ -1128,3 +1128,91 @@ export async function markDelivered(id: string, actorId?: string) {
     return updated;
   });
 }
+
+interface TrackingCheckpoint {
+  status: string;
+  at: string;
+  note?: string | null;
+  location?: string | null;
+}
+
+/**
+ * Live courier fetch — env-gated. Expects the partner to answer
+ * `GET {SHIPPING_API_URL}?awb=<awb>` with `{ status, checkpoints: [...] }`.
+ * Plug a specific courier (Delhivery / Shiprocket / …) here. Returns null when
+ * unconfigured or on any error, so tracking falls back to our own timeline.
+ */
+async function fetchCourierStatus(
+  awb: string,
+): Promise<{ status?: string; checkpoints: TrackingCheckpoint[] } | null> {
+  if (!env.SHIPPING_API_URL) return null;
+  try {
+    const url = `${env.SHIPPING_API_URL}${env.SHIPPING_API_URL.includes('?') ? '&' : '?'}awb=${encodeURIComponent(awb)}`;
+    const resp = await fetch(url, {
+      headers: env.SHIPPING_API_TOKEN ? { Authorization: `Bearer ${env.SHIPPING_API_TOKEN}` } : {},
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      status?: string;
+      checkpoints?: { status?: string; at?: string; note?: string; location?: string }[];
+    };
+    return {
+      status: data.status,
+      checkpoints: (data.checkpoints ?? []).map((c) => ({
+        status: c.status ?? 'IN_TRANSIT',
+        at: c.at ?? new Date().toISOString(),
+        note: c.note ?? null,
+        location: c.location ?? null,
+      })),
+    };
+  } catch (err) {
+    logger.warn({ err, awb }, 'courier tracking fetch failed');
+    return null;
+  }
+}
+
+/**
+ * Shipment tracking for an order: courier + AWB + a checkpoint timeline. The
+ * timeline is built from the order's lifecycle events, and enriched with live
+ * courier checkpoints when a shipping partner API is configured and the order
+ * has shipped.
+ */
+export async function getOrderTracking(
+  actor: { sub: string; type: 'STAFF' | 'CUSTOMER' },
+  id: string,
+) {
+  const order = await getOrder(actor, id); // authorizes + includes events
+
+  const checkpoints: TrackingCheckpoint[] = (order.events ?? [])
+    .map((e) => ({
+      status: e.status,
+      at: e.createdAt.toISOString(),
+      note: e.note ?? (e.user ? `by ${e.user.name}` : null),
+    }))
+    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+
+  const base = {
+    orderNumber: order.orderNumber,
+    status: order.status,
+    courierName: order.courierName,
+    trackingNumber: order.trackingNumber,
+    trackingUrl: order.trackingUrl,
+    shippedAt: order.shippedAt,
+    deliveredAt: order.deliveredAt,
+    live: false,
+    checkpoints,
+  };
+
+  if (order.trackingNumber && (order.status === OrderStatus.SHIPPED || order.status === OrderStatus.DELIVERED)) {
+    const live = await fetchCourierStatus(order.trackingNumber);
+    if (live) {
+      return {
+        ...base,
+        live: true,
+        status: live.status ?? base.status,
+        checkpoints: live.checkpoints.length ? live.checkpoints : checkpoints,
+      };
+    }
+  }
+  return base;
+}

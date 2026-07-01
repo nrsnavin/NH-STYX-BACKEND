@@ -58,6 +58,15 @@ export const getOne = asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true, data });
 });
 
+// Shipment tracking timeline (live from the courier when configured).
+export const tracking = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.getOrderTracking(
+    { sub: req.auth!.sub, type: req.auth!.type },
+    req.params.id,
+  );
+  res.json({ success: true, data });
+});
+
 export const updateStatus = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.updateOrderStatus(req.params.id, req.body.status, req.auth!.sub);
   await audit({

@@ -51,6 +51,13 @@ const envSchema = z.object({
   // unset, the bucket's regional S3 URL is used.
   S3_PUBLIC_BASE_URL: z.string().optional(),
 
+  // Shipping partner tracking (optional). When SHIPPING_API_URL is set, the
+  // order tracking endpoint fetches live checkpoints from the courier for a
+  // shipped order (GET {url}?awb=<awb>, optional bearer token); otherwise it
+  // returns the order's own lifecycle timeline.
+  SHIPPING_API_URL: z.string().optional(),
+  SHIPPING_API_TOKEN: z.string().optional(),
+
   // Anthropic (optional — AI search falls back to keyword search when unset).
   ANTHROPIC_API_KEY: z.string().optional(),
   AI_SEARCH_MODEL: z.string().default('claude-opus-4-8'),
