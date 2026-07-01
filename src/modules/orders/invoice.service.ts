@@ -3,6 +3,7 @@ import PDFDocument from 'pdfkit';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/ApiError';
 import { getStaffStoreId } from '../../utils/storeContext';
+import { getSettings } from '../settings/settings.service';
 
 const rs = (paise: number) => `Rs. ${(paise / 100).toFixed(2)}`;
 
@@ -29,6 +30,7 @@ export async function streamInvoice(
     }
   }
 
+  const settings = await getSettings();
   const intra = order.igstPaise === 0;
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
   res.setHeader('Content-Type', 'application/pdf');
@@ -41,12 +43,14 @@ export async function streamInvoice(
 
   // Seller (store) + invoice meta
   const top = doc.y;
-  doc.fontSize(11).font('Helvetica-Bold').text(order.store?.name ?? 'NH Styx', 50, top);
+  doc.fontSize(11).font('Helvetica-Bold').text(order.store?.name ?? (settings.businessName || 'NH Styx'), 50, top);
   doc.font('Helvetica').fontSize(9);
   if (order.store?.addressLine) doc.text(order.store.addressLine, 50);
   doc.text(`${order.store?.city ?? ''}, ${order.store?.state ?? ''} ${order.store?.pincode ?? ''}`.trim(), 50);
   doc.text(`GST State Code: ${order.sellerStateCode ?? order.store?.stateCode ?? '-'}`, 50);
+  if (settings.gstin) doc.text(`GSTIN: ${settings.gstin}`, 50);
   if (order.store?.phone) doc.text(`Phone: ${order.store.phone}`, 50);
+  else if (settings.supportPhone) doc.text(`Phone: ${settings.supportPhone}`, 50);
 
   doc.fontSize(9).font('Helvetica');
   doc.text(`Invoice No: ${order.orderNumber}`, 330, top, { align: 'right' });
@@ -119,9 +123,31 @@ export async function streamInvoice(
   doc.moveDown(0.2);
   label('Grand Total', rs(order.totalPaise), true);
 
-  doc.moveDown(2);
-  doc.font('Helvetica').fontSize(8).fillColor('#666')
-    .text('This is a computer-generated invoice.', 50, doc.y, { align: 'center' });
+  doc.moveDown(1.5);
+  doc.fillColor('#000').fontSize(8);
+  const bankBits = [
+    settings.bankName && `Bank: ${settings.bankName}`,
+    settings.bankAccount && `A/c: ${settings.bankAccount}`,
+    settings.bankIfsc && `IFSC: ${settings.bankIfsc}`,
+    settings.bankUpi && `UPI: ${settings.bankUpi}`,
+  ].filter(Boolean) as string[];
+  if (bankBits.length) {
+    doc.font('Helvetica-Bold').text('Payment details', 50);
+    doc.font('Helvetica').text(bankBits.join('    '), 50, doc.y, { width: 495 });
+    doc.moveDown(0.5);
+  }
+  if (settings.invoiceTerms) {
+    doc.font('Helvetica-Bold').text('Terms & conditions', 50);
+    doc.font('Helvetica').text(settings.invoiceTerms, 50, doc.y, { width: 495 });
+    doc.moveDown(0.5);
+  }
+
+  doc.moveDown(1);
+  doc.font('Helvetica').fontSize(8).fillColor('#666');
+  if (settings.invoiceFooter) {
+    doc.text(settings.invoiceFooter, 50, doc.y, { align: 'center', width: 495 });
+  }
+  doc.text('This is a computer-generated invoice.', 50, doc.y, { align: 'center', width: 495 });
 
   doc.end();
 }

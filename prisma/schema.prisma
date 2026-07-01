@@ -1070,3 +1070,12 @@ model Notification {
   @@index([customerId, createdAt])
   @@index([audience, status])
 }
+
+// Editable business/store configuration as a small key-value store (company
+// legal details, GST, support contacts, invoice footer, bank details). Read by
+// staff; edited by admins. Kept flexible so new keys need no migration.
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
