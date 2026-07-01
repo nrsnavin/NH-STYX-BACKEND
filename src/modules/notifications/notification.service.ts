@@ -111,6 +111,23 @@ export async function notifyOrderDelivered(db: Db, order: OrderLike): Promise<vo
   });
 }
 
+export async function notifyOrderCancelled(
+  db: Db,
+  order: OrderLike,
+  opts: { refunded: boolean },
+): Promise<void> {
+  await record(db, {
+    audience: NotificationAudience.CUSTOMER,
+    customerId: order.customerId,
+    event: 'ORDER_CANCELLED',
+    title: `Order ${order.orderNumber} cancelled`,
+    body: opts.refunded
+      ? 'Your order has been cancelled and the payment refunded.'
+      : 'Your order has been cancelled.',
+    orderId: order.id,
+  });
+}
+
 export async function notifyReturnRequested(
   db: Db,
   opts: { order: OrderLike; returnNumber: string; refundAmountPaise: number },

@@ -6,6 +6,7 @@ import {
 } from '../../middlewares/auth.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import {
+  cancelOrderSchema,
   createOrderSchema,
   listOrdersSchema,
   orderIdSchema,
@@ -85,6 +86,13 @@ router.post(
   authorize('ADMIN', 'AGENT'),
   validate(orderIdSchema),
   orderController.deliver,
+);
+router.post(
+  '/:id/cancel',
+  authenticate,
+  authorize('ADMIN', 'AGENT'),
+  validate(cancelOrderSchema),
+  orderController.cancel,
 );
 router.post(
   '/:id/payments',

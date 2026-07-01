@@ -16,6 +16,7 @@ import { recordOrderEvent, recordStockMovement } from '../../utils/ledger';
 import { getStaffStoreId } from '../../utils/storeContext';
 import * as couponService from '../coupons/coupon.service';
 import {
+  notifyOrderCancelled,
   notifyOrderDelivered,
   notifyOrderPlaced,
   notifyOrderShipped,
@@ -1284,6 +1285,128 @@ async function createCourierShipment(order: {
     trackingUrl: data.trackingUrl,
     labelUrl: data.labelUrl,
   };
+}
+
+/** Calls Razorpay's refund API for a captured payment (network I/O). */
+async function razorpayRefund(paymentId: string, amountPaise: number): Promise<string> {
+  const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString('base64');
+  const resp = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}/refund`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount: amountPaise, speed: 'normal' }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    logger.error({ status: resp.status, text }, 'razorpay refund failed (cancel)');
+    throw ApiError.badRequest('Razorpay refund failed — please retry or refund manually');
+  }
+  return ((await resp.json()) as { id: string }).id;
+}
+
+/**
+ * Staff cancels an order: restocks whatever is still consumed (net of any prior
+ * returns) via RELEASE ledger entries, refunds a captured payment (Razorpay when
+ * online, otherwise flagged for manual settlement), fails any pending intents,
+ * and flips the order to CANCELLED. Delivered/returned/cancelled orders are
+ * rejected (use a return for a delivered order).
+ */
+export async function cancelOrder(id: string, reason: string | undefined, actorId?: string) {
+  const order = await prisma.order.findUnique({ where: { id } });
+  if (!order) throw ApiError.notFound('Order not found');
+  if (
+    order.status === OrderStatus.CANCELLED ||
+    order.status === OrderStatus.RETURNED ||
+    order.status === OrderStatus.DELIVERED
+  ) {
+    throw ApiError.badRequest(`A ${order.status.toLowerCase()} order can't be cancelled`);
+  }
+
+  // Resolve the refund channel + call Razorpay (network) BEFORE the tx.
+  const refundable = order.amountPaidPaise > 0;
+  let refundMethod: PaymentMethod | null = null;
+  let refundReference: string | null = null;
+  if (refundable) {
+    refundMethod = order.paymentMethod;
+    const rzp = await prisma.payment.findFirst({
+      where: {
+        orderId: id,
+        method: PaymentMethod.RAZORPAY,
+        status: PaymentStatus.PAID,
+        razorpayPaymentId: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET && rzp?.razorpayPaymentId) {
+      refundReference = await razorpayRefund(rzp.razorpayPaymentId, order.amountPaidPaise);
+      refundMethod = PaymentMethod.RAZORPAY;
+    }
+  }
+
+  return tenantTransaction(async (tx) => {
+    // Restock the still-consumed quantity per (product, variant) — the net of
+    // SALE (−) and any earlier RELEASE (+) movements for this order.
+    if (order.storeId) {
+      const moves = await tx.stockMovement.findMany({ where: { orderId: id } });
+      const net = new Map<string, { productId: string; variantId: string | null; qty: number }>();
+      for (const m of moves) {
+        const key = `${m.productId}|${m.variantId ?? ''}`;
+        const cur = net.get(key) ?? { productId: m.productId, variantId: m.variantId, qty: 0 };
+        cur.qty += m.deltaQty;
+        net.set(key, cur);
+      }
+      for (const n of net.values()) {
+        if (n.qty >= 0) continue; // nothing left consumed
+        const putBack = -n.qty;
+        if (n.variantId) {
+          await tx.storeVariant.updateMany({
+            where: { storeId: order.storeId, variantId: n.variantId },
+            data: { stockQty: { increment: putBack } },
+          });
+        } else {
+          await tx.storeProduct.updateMany({
+            where: { storeId: order.storeId, productId: n.productId },
+            data: { stockQty: { increment: putBack } },
+          });
+        }
+        await recordStockMovement(tx, {
+          storeId: order.storeId,
+          productId: n.productId,
+          variantId: n.variantId,
+          deltaQty: putBack,
+          type: StockMovementType.RELEASE,
+          orderId: id,
+          userId: actorId,
+          reason: 'Order cancelled',
+        });
+      }
+    }
+
+    // Abandon any pending payment intents.
+    await tx.payment.updateMany({
+      where: { orderId: id, status: PaymentStatus.CREATED },
+      data: { status: PaymentStatus.FAILED },
+    });
+
+    const updated = await tx.order.update({
+      where: { id },
+      data: {
+        status: OrderStatus.CANCELLED,
+        paymentStatus: refundable ? OrderPaymentStatus.REFUNDED : order.paymentStatus,
+        amountDuePaise: 0,
+      },
+    });
+    await recordOrderEvent(tx, id, OrderStatus.CANCELLED, {
+      userId: actorId,
+      note: reason?.trim() ? `Cancelled: ${reason.trim()}` : 'Cancelled',
+    });
+    await notifyOrderCancelled(tx, updated, { refunded: refundable });
+    return {
+      order: updated,
+      refundedPaise: refundable ? order.amountPaidPaise : 0,
+      refundMethod,
+      refundReference,
+    };
+  });
 }
 
 /** Auto-books a shipment with the courier, then marks the order SHIPPED with the

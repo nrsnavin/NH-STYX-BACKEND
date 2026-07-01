@@ -126,6 +126,20 @@ export const bookShipment = asyncHandler(async (req: Request, res: Response) => 
   res.json({ success: true, data });
 });
 
+// Staff cancels an order (restock + refund).
+export const cancel = asyncHandler(async (req: Request, res: Response) => {
+  const data = await orderService.cancelOrder(req.params.id, req.body?.reason, req.auth!.sub);
+  await audit({
+    actorType: req.auth!.type,
+    actorId: req.auth!.sub,
+    action: 'order.cancel',
+    entity: 'Order',
+    entityId: req.params.id,
+    meta: { reason: req.body?.reason, refundedPaise: data.refundedPaise },
+  });
+  res.json({ success: true, data });
+});
+
 // Staff marks the order delivered.
 export const deliver = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.markDelivered(req.params.id, req.auth!.sub);

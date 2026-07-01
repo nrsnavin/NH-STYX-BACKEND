@@ -75,3 +75,8 @@ export const shipOrderSchema = z.object({
     trackingUrl: z.string().url().max(500).optional().or(z.literal('')),
   }),
 });
+
+export const cancelOrderSchema = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.object({ reason: z.string().max(300).optional() }),
+});
