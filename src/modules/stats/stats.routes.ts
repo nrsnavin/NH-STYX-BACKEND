@@ -39,4 +39,15 @@ router.get(
   }),
 );
 
+// Agent sales performance — admins see every agent, an agent sees only self.
+router.get(
+  '/agent-performance',
+  ...staff,
+  asyncHandler(async (req: Request, res: Response) => {
+    const selfId = req.auth?.role === 'ADMIN' ? null : req.auth!.sub;
+    const data = await statsService.agentPerformance(selfId);
+    res.json({ success: true, data });
+  }),
+);
+
 export default router;

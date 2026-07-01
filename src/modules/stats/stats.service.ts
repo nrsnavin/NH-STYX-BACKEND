@@ -1,7 +1,141 @@
-import { Prisma } from '@prisma/client';
+import {
+  ActivityType,
+  LeadStage,
+  OrderStatus,
+  Prisma,
+  QuotationStatus,
+  Role,
+} from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 
 export const LOW_STOCK_THRESHOLD = 10;
+
+const OPEN_LEAD_STAGES: LeadStage[] = [LeadStage.NEW, LeadStage.CONTACTED, LeadStage.QUALIFIED];
+
+/**
+ * Per-agent sales performance. `selfUserId` limits it to one agent (an agent
+ * viewing their own numbers); null returns every agent (admin). Metrics come
+ * from what's directly attributable to the agent — leads assigned to them,
+ * quotations they built, and field activity they logged — plus store context
+ * (customers + last-30-day revenue at the agent's store, shared when a store
+ * has more than one agent).
+ */
+export async function agentPerformance(selfUserId: string | null) {
+  const agents = await prisma.user.findMany({
+    where: { role: Role.AGENT, ...(selfUserId ? { id: selfUserId } : {}) },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      isActive: true,
+      storeId: true,
+      store: { select: { name: true, city: true } },
+    },
+    orderBy: { name: 'asc' },
+  });
+  if (agents.length === 0) return { agents: [], generatedAt: new Date().toISOString() };
+
+  const agentIds = agents.map((a) => a.id);
+  const storeIds = [...new Set(agents.map((a) => a.storeId).filter((s): s is string => Boolean(s)))];
+  const since = new Date();
+  since.setDate(since.getDate() - 30);
+
+  const [leadGroups, quoteGroups, actGroups, custGroups, revGroups] = await Promise.all([
+    prisma.lead.groupBy({
+      by: ['assignedToId', 'stage'],
+      where: { assignedToId: { in: agentIds } },
+      _count: { _all: true },
+      _sum: { estValuePaise: true },
+    }),
+    prisma.quotation.groupBy({
+      by: ['createdById', 'status'],
+      where: { createdById: { in: agentIds } },
+      _count: { _all: true },
+      _sum: { totalPaise: true },
+    }),
+    prisma.activity.groupBy({
+      by: ['createdById', 'type'],
+      where: { createdById: { in: agentIds } },
+      _count: { _all: true },
+    }),
+    storeIds.length
+      ? prisma.customer.groupBy({
+          by: ['storeId'],
+          where: { storeId: { in: storeIds } },
+          _count: { _all: true },
+        })
+      : Promise.resolve([] as { storeId: string | null; _count: { _all: number } }[]),
+    storeIds.length
+      ? prisma.order.groupBy({
+          by: ['storeId'],
+          where: {
+            storeId: { in: storeIds },
+            createdAt: { gte: since },
+            status: { notIn: [OrderStatus.CANCELLED, OrderStatus.RETURNED] },
+          },
+          _sum: { totalPaise: true },
+        })
+      : Promise.resolve([] as { storeId: string | null; _sum: { totalPaise: number | null } }[]),
+  ]);
+
+  const custByStore = new Map(custGroups.map((g) => [g.storeId, g._count._all]));
+  const revByStore = new Map(revGroups.map((g) => [g.storeId, g._sum.totalPaise ?? 0]));
+
+  const rows = agents.map((a) => {
+    const myLeads = leadGroups.filter((g) => g.assignedToId === a.id);
+    const leadStage = (st: LeadStage) =>
+      myLeads.filter((g) => g.stage === st).reduce((s, g) => s + g._count._all, 0);
+    const won = leadStage(LeadStage.WON);
+    const lost = leadStage(LeadStage.LOST);
+    const open = OPEN_LEAD_STAGES.reduce((s, st) => s + leadStage(st), 0);
+    const leadsTotal = myLeads.reduce((s, g) => s + g._count._all, 0);
+    const pipelinePaise = myLeads
+      .filter((g) => OPEN_LEAD_STAGES.includes(g.stage))
+      .reduce((s, g) => s + (g._sum.estValuePaise ?? 0), 0);
+    const decided = won + lost;
+
+    const myQuotes = quoteGroups.filter((g) => g.createdById === a.id);
+    const quotesTotal = myQuotes.reduce((s, g) => s + g._count._all, 0);
+    const converted = myQuotes
+      .filter((g) => g.status === QuotationStatus.CONVERTED)
+      .reduce((s, g) => s + g._count._all, 0);
+    const quoteValuePaise = myQuotes.reduce((s, g) => s + (g._sum.totalPaise ?? 0), 0);
+
+    const myActs = actGroups.filter((g) => g.createdById === a.id);
+    const actType = (t: ActivityType) =>
+      myActs.filter((g) => g.type === t).reduce((s, g) => s + g._count._all, 0);
+    const activities = myActs.reduce((s, g) => s + g._count._all, 0);
+
+    return {
+      id: a.id,
+      name: a.name,
+      email: a.email,
+      isActive: a.isActive,
+      store: a.store ? { name: a.store.name, city: a.store.city } : null,
+      customersManaged: a.storeId ? custByStore.get(a.storeId) ?? 0 : 0,
+      storeRevenuePaise: a.storeId ? revByStore.get(a.storeId) ?? 0 : 0,
+      leads: {
+        total: leadsTotal,
+        won,
+        lost,
+        open,
+        winRatePct: decided ? Math.round((won / decided) * 100) : 0,
+        pipelinePaise,
+      },
+      quotations: {
+        total: quotesTotal,
+        converted,
+        valuePaise: quoteValuePaise,
+        conversionPct: quotesTotal ? Math.round((converted / quotesTotal) * 100) : 0,
+      },
+      visits: actType(ActivityType.VISIT),
+      calls: actType(ActivityType.CALL),
+      activities,
+    };
+  });
+
+  return { agents: rows, generatedAt: new Date().toISOString() };
+}
 
 /** Store-scoped dashboard metrics. storeId null = all stores (admin). */
 export async function dashboard(storeId: string | null) {
