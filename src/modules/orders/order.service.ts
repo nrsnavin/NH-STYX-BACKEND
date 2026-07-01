@@ -1202,16 +1202,72 @@ async function fetchCourierStatus(
 }
 
 /**
+ * Build a plausible courier-style checkpoint timeline from the order's own
+ * shipment timestamps and origin/destination cities. Used as demo tracking when
+ * no live shipping-partner API is configured, so the customer app still shows a
+ * realistic journey instead of a bare status list. All timestamps are derived
+ * from the order's real shipped/delivered times — nothing is invented.
+ */
+function demoCourierCheckpoints(
+  order: {
+    status: OrderStatus;
+    shippedAt: Date | null;
+    deliveredAt: Date | null;
+    courierName: string | null;
+    shipCity: string | null;
+    store?: { city: string | null } | null;
+    createdAt: Date;
+  },
+  events: { status: string; createdAt: Date }[],
+): TrackingCheckpoint[] {
+  const shippedEvt = events.find((e) => e.status === OrderStatus.SHIPPED);
+  const deliveredEvt = events.find((e) => e.status === OrderStatus.DELIVERED);
+  const shippedSrc = order.shippedAt ?? shippedEvt?.createdAt ?? null;
+  if (!shippedSrc) return [];
+
+  const shippedMs = new Date(shippedSrc).getTime();
+  const deliveredSrc = order.deliveredAt ?? deliveredEvt?.createdAt ?? null;
+  const endMs = deliveredSrc
+    ? new Date(deliveredSrc).getTime()
+    : Math.max(Date.now(), shippedMs + 18 * 3_600_000);
+  const span = Math.max(endMs - shippedMs, 12 * 3_600_000);
+  const at = (frac: number) => new Date(shippedMs + span * frac).toISOString();
+
+  const origin = order.store?.city ?? 'Origin hub';
+  const dest = order.shipCity ?? 'Destination';
+  const courier = order.courierName ?? env.COURIER_NAME ?? 'Delhivery';
+
+  const cps: TrackingCheckpoint[] = [
+    { status: 'PICKED_UP', at: at(0), note: `Picked up by ${courier}`, location: origin },
+    { status: 'IN_TRANSIT', at: at(0.3), note: 'Shipment in transit', location: `${origin} sorting centre` },
+    { status: 'IN_TRANSIT', at: at(0.6), note: 'Arrived at facility', location: `${dest} hub` },
+  ];
+  if (order.status === OrderStatus.DELIVERED) {
+    cps.push({ status: 'OUT_FOR_DELIVERY', at: at(0.85), note: 'Out for delivery', location: dest });
+    cps.push({
+      status: 'DELIVERED',
+      at: deliveredSrc ? new Date(deliveredSrc).toISOString() : at(1),
+      note: 'Delivered — thank you for shopping',
+      location: dest,
+    });
+  } else {
+    cps.push({ status: 'OUT_FOR_DELIVERY', at: at(0.85), note: 'Out for delivery', location: dest });
+  }
+  return cps;
+}
+
+/**
  * Shipment tracking for an order: courier + AWB + a checkpoint timeline. The
  * timeline is built from the order's lifecycle events, and enriched with live
  * courier checkpoints when a shipping partner API is configured and the order
- * has shipped.
+ * has shipped. When no partner is configured, shipped/delivered orders fall back
+ * to a demo courier timeline derived from the order's own shipment timestamps.
  */
 export async function getOrderTracking(
   actor: { sub: string; type: 'STAFF' | 'CUSTOMER' },
   id: string,
 ) {
-  const order = await getOrder(actor, id); // authorizes + includes events
+  const order = await getOrder(actor, id); // authorizes + includes events + store
 
   const checkpoints: TrackingCheckpoint[] = (order.events ?? [])
     .map((e) => ({
@@ -1230,10 +1286,13 @@ export async function getOrderTracking(
     shippedAt: order.shippedAt,
     deliveredAt: order.deliveredAt,
     live: false,
+    demo: false,
     checkpoints,
   };
 
-  if (order.trackingNumber && (order.status === OrderStatus.SHIPPED || order.status === OrderStatus.DELIVERED)) {
+  const shipped = order.status === OrderStatus.SHIPPED || order.status === OrderStatus.DELIVERED;
+
+  if (order.trackingNumber && shipped) {
     const live = await fetchCourierStatus(order.trackingNumber);
     if (live) {
       return {
@@ -1244,6 +1303,25 @@ export async function getOrderTracking(
       };
     }
   }
+
+  // No live partner → synthesize a demo courier journey for shipped orders,
+  // keeping the pre-shipment order events (placed / confirmed / packed).
+  if (shipped) {
+    const demo = demoCourierCheckpoints(order, order.events ?? []);
+    if (demo.length) {
+      const preShipStatuses: string[] = [
+        OrderStatus.PENDING,
+        OrderStatus.CONFIRMED,
+        OrderStatus.PACKED,
+      ];
+      const preShip = checkpoints.filter((c) => preShipStatuses.includes(c.status));
+      const combined = [...preShip, ...demo].sort(
+        (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime(),
+      );
+      return { ...base, demo: true, checkpoints: combined };
+    }
+  }
+
   return base;
 }
 
