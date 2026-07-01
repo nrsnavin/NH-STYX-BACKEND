@@ -41,6 +41,16 @@ const envSchema = z.object({
   // webhook accepts unsigned posts so local testing works.
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 
+  // Image storage. When AWS_S3_BUCKET is set, uploads go to S3 and the API
+  // returns an absolute (bucket or CDN) URL; otherwise images are written to
+  // local disk and served from /uploads. Credentials come from the standard
+  // AWS chain (env vars or the instance IAM role) — no need to hardcode them.
+  AWS_REGION: z.string().default('ap-south-1'),
+  AWS_S3_BUCKET: z.string().optional(),
+  // Optional CDN/base to serve objects from (e.g. a CloudFront domain). When
+  // unset, the bucket's regional S3 URL is used.
+  S3_PUBLIC_BASE_URL: z.string().optional(),
+
   // Anthropic (optional — AI search falls back to keyword search when unset).
   ANTHROPIC_API_KEY: z.string().optional(),
   AI_SEARCH_MODEL: z.string().default('claude-opus-4-8'),
