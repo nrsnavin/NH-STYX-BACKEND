@@ -30,7 +30,10 @@ const upload = multer({
 
 const router = Router();
 
-// Staff upload a product image; returns an absolute URL the apps can load.
+// Staff upload a product image. Returns a RELATIVE path (`/uploads/<file>`) so
+// every client — web console, Android emulator, a phone — resolves it against
+// its OWN configured API host. (An absolute URL baked with the uploader's host,
+// e.g. http://localhost:4000, is unreachable from other devices.)
 router.post(
   '/',
   authenticate,
@@ -38,8 +41,7 @@ router.post(
   upload.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw ApiError.badRequest('No image uploaded (field name must be "file")');
-    const base = `${req.protocol}://${req.get('host')}`;
-    res.status(201).json({ success: true, data: { url: `${base}/uploads/${req.file.filename}` } });
+    res.status(201).json({ success: true, data: { url: `/uploads/${req.file.filename}` } });
   }),
 );
 
