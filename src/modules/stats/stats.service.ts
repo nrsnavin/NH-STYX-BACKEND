@@ -54,6 +54,82 @@ export async function dashboard(storeId: string | null) {
   };
 }
 
+/** Receivables: money owed per customer (unpaid balances), with overdue and
+ *  credit-limit utilisation. Store-scoped for agents. */
+export async function receivables(storeId: string | null) {
+  const now = new Date();
+  const orders = await prisma.order.findMany({
+    where: {
+      ...(storeId ? { storeId } : {}),
+      amountDuePaise: { gt: 0 },
+      status: { notIn: ['CANCELLED', 'RETURNED'] },
+    },
+    select: {
+      customerId: true,
+      amountDuePaise: true,
+      dueDate: true,
+      customer: {
+        select: { shopName: true, phone: true, creditLimitPaise: true, creditApproved: true },
+      },
+    },
+  });
+
+  interface Row {
+    customerId: string;
+    shopName: string;
+    phone: string;
+    creditLimitPaise: number;
+    creditApproved: boolean;
+    outstandingPaise: number;
+    overduePaise: number;
+    oldestDueDate: Date | null;
+    ordersWithDue: number;
+  }
+  const byCustomer = new Map<string, Row>();
+  for (const o of orders) {
+    let row = byCustomer.get(o.customerId);
+    if (!row) {
+      row = {
+        customerId: o.customerId,
+        shopName: o.customer.shopName,
+        phone: o.customer.phone,
+        creditLimitPaise: o.customer.creditLimitPaise,
+        creditApproved: o.customer.creditApproved,
+        outstandingPaise: 0,
+        overduePaise: 0,
+        oldestDueDate: null,
+        ordersWithDue: 0,
+      };
+      byCustomer.set(o.customerId, row);
+    }
+    row.outstandingPaise += o.amountDuePaise;
+    row.ordersWithDue += 1;
+    if (o.dueDate && o.dueDate < now) {
+      row.overduePaise += o.amountDuePaise;
+      if (!row.oldestDueDate || o.dueDate < row.oldestDueDate) row.oldestDueDate = o.dueDate;
+    }
+  }
+
+  const customers = [...byCustomer.values()]
+    .map((r) => ({
+      ...r,
+      utilizationPct:
+        r.creditLimitPaise > 0 ? Math.round((r.outstandingPaise / r.creditLimitPaise) * 100) : null,
+      overLimit: r.creditLimitPaise > 0 && r.outstandingPaise > r.creditLimitPaise,
+    }))
+    .sort((a, b) => b.outstandingPaise - a.outstandingPaise);
+
+  return {
+    summary: {
+      totalOutstandingPaise: customers.reduce((s, c) => s + c.outstandingPaise, 0),
+      totalOverduePaise: customers.reduce((s, c) => s + c.overduePaise, 0),
+      customersWithDues: customers.length,
+      overLimitCount: customers.filter((c) => c.overLimit).length,
+    },
+    customers,
+  };
+}
+
 /** Store products at or below the low-stock threshold. */
 export async function lowStock(storeId: string | null, threshold = LOW_STOCK_THRESHOLD) {
   const rows = await prisma.storeProduct.findMany({

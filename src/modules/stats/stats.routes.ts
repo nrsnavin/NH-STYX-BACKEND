@@ -30,4 +30,13 @@ router.get(
   }),
 );
 
+router.get(
+  '/receivables',
+  ...staff,
+  asyncHandler(async (req: Request, res: Response) => {
+    const data = await statsService.receivables(await scope(req));
+    res.json({ success: true, data });
+  }),
+);
+
 export default router;
