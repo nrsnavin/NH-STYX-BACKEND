@@ -68,20 +68,30 @@ export async function getCart(customerId: string) {
   const svByVariant = new Map(storeVariants.map((sv) => [sv.variantId, sv]));
 
   let subtotalPaise = 0;
+  const deadLineIds: string[] = [];
   const enriched = items.flatMap((item) => {
     const product = item.product;
-    if (!product.isActive) return [];
+    if (!product.isActive) {
+      deadLineIds.push(item.id);
+      return [];
+    }
 
     let unitPricePaise: number;
     let stockQty: number;
     if (item.variantId) {
       const sv = svByVariant.get(item.variantId);
-      if (!sv || !sv.isActive || !item.variant?.isActive) return [];
+      if (!sv || !sv.isActive || !item.variant?.isActive) {
+        deadLineIds.push(item.id);
+        return [];
+      }
       unitPricePaise = sv.pricePaise;
       stockQty = sv.stockQty;
     } else {
       const sp = spByProduct.get(item.productId);
-      if (!sp || !sp.isActive) return [];
+      if (!sp || !sp.isActive) {
+        deadLineIds.push(item.id);
+        return [];
+      }
       unitPricePaise = resolveUnitPrice(sp.pricePaise, sp.priceTiers, item.quantity);
       stockQty = sp.stockQty;
     }
@@ -106,6 +116,13 @@ export async function getCart(customerId: string) {
       },
     ];
   });
+
+  // Self-heal: physically remove lines whose product/variant was delisted,
+  // instead of merely hiding them — a hidden-but-present line is exactly the
+  // phantom that used to block checkout.
+  if (deadLineIds.length > 0) {
+    await prisma.cartItem.deleteMany({ where: { id: { in: deadLineIds } } });
+  }
 
   return {
     items: enriched,
