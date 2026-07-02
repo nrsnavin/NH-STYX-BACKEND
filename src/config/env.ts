@@ -21,6 +21,13 @@ const envSchema = z.object({
     ),
 
   DATABASE_URL: z.string().url(),
+  // Serverless Postgres (e.g. Neon) suspends idle compute, so the first query
+  // after a quiet spell pays a multi-second cold start. Set true to ping the
+  // DB every few minutes and keep it warm (costs compute hours — weigh it).
+  KEEP_DB_WARM: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be at least 16 characters'),
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET must be at least 16 characters'),

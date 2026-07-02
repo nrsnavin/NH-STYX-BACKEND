@@ -23,7 +23,13 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // With serverless Postgres (Neon), point DATABASE_URL at the POOLED
+  // connection string (the "-pooler" host) so the app doesn't pay a fresh
+  // TLS+auth handshake per connection, and DIRECT_URL at the direct host —
+  // migrations need a real (non-pgbouncer) connection. On plain Postgres,
+  // set both to the same URL.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ------------------------------------------------------------
