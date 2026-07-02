@@ -15,18 +15,29 @@ export const s3Enabled = Boolean(env.AWS_S3_BUCKET);
 
 const s3 = s3Enabled ? new S3Client({ region: env.AWS_REGION }) : null;
 
-function generatedName(originalName: string): string {
-  const ext = path.extname(originalName).toLowerCase() || '.jpg';
+// Map the (already-validated) image mimetype to a safe extension. The client's
+// original filename is never trusted for the on-disk name, so it can't smuggle
+// a foreign extension (e.g. .php/.html) or path segments onto the server.
+const EXT_BY_MIME: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+};
+
+function generatedName(mimetype: string): string {
+  const ext = EXT_BY_MIME[mimetype] ?? '.img';
   return `${Date.now()}_${crypto.randomBytes(6).toString('hex')}${ext}`;
 }
 
 // S3 → buffer the file in memory so we can PutObject; disk → write it straight
-// to UPLOAD_DIR with a generated name.
+// to UPLOAD_DIR with a generated name derived from the validated mimetype.
 const storage = s3Enabled
   ? multer.memoryStorage()
   : multer.diskStorage({
       destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-      filename: (_req, file, cb) => cb(null, generatedName(file.originalname)),
+      filename: (_req, file, cb) => cb(null, generatedName(file.mimetype)),
     });
 
 export const uploadMiddleware = multer({
@@ -47,7 +58,7 @@ export const uploadMiddleware = multer({
  */
 export async function persistUpload(file: Express.Multer.File): Promise<string> {
   if (s3Enabled && s3) {
-    const key = `products/${generatedName(file.originalname)}`;
+    const key = `products/${generatedName(file.mimetype)}`;
     await s3.send(
       new PutObjectCommand({
         Bucket: env.AWS_S3_BUCKET!,

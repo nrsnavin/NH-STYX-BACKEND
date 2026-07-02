@@ -2,8 +2,30 @@ import { Request, Response } from 'express';
 import { OrderStatus } from '@prisma/client';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { audit } from '../../utils/audit';
+import { ApiError } from '../../utils/ApiError';
+import { prisma } from '../../lib/prisma';
+import { getStaffStoreId } from '../../utils/storeContext';
 import * as orderService from './order.service';
 import { streamInvoice } from './invoice.service';
+
+/**
+ * Object-level authorization for staff order mutations: an agent may only act
+ * on orders belonging to their own store; an admin (no store) on any. Mirrors
+ * the scoping already enforced on order listing/detail so a mutation can't be
+ * used to reach across stores (status, payments, shipping, cancel/refund).
+ */
+async function assertOrderInScope(req: Request, orderId: string): Promise<void> {
+  if (req.auth?.role === 'ADMIN') return;
+  const storeId = await getStaffStoreId(req.auth!.sub);
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { storeId: true },
+  });
+  if (!order) throw ApiError.notFound('Order not found');
+  if (storeId && order.storeId !== storeId) {
+    throw ApiError.forbidden('This order belongs to another store');
+  }
+}
 
 export const create = asyncHandler(async (req: Request, res: Response) => {
   const data = await orderService.createOrder(req.auth!.sub, req.body);
@@ -68,6 +90,7 @@ export const tracking = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const updateStatus = asyncHandler(async (req: Request, res: Response) => {
+  await assertOrderInScope(req, req.params.id);
   const data = await orderService.updateOrderStatus(req.params.id, req.body.status, req.auth!.sub);
   await audit({
     actorType: req.auth!.type,
@@ -82,7 +105,15 @@ export const updateStatus = asyncHandler(async (req: Request, res: Response) => 
 
 // Apply a fulfilment status to many orders at once.
 export const bulkStatus = asyncHandler(async (req: Request, res: Response) => {
-  const data = await orderService.bulkUpdateOrderStatus(req.body.ids, req.body.status, req.auth!.sub);
+  // Agents are limited to their own store; the service filters by it so a
+  // batch can't reach across stores. Admins (null) span all stores.
+  const scopeStoreId = req.auth?.role === 'ADMIN' ? null : await getStaffStoreId(req.auth!.sub);
+  const data = await orderService.bulkUpdateOrderStatus(
+    req.body.ids,
+    req.body.status,
+    req.auth!.sub,
+    scopeStoreId,
+  );
   await audit({
     actorType: req.auth!.type,
     actorId: req.auth!.sub,
@@ -94,6 +125,7 @@ export const bulkStatus = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const recordPayment = asyncHandler(async (req: Request, res: Response) => {
+  await assertOrderInScope(req, req.params.id);
   const data = await orderService.recordPayment(req.params.id, req.body);
   await audit({
     actorType: req.auth!.type,
@@ -113,6 +145,7 @@ export const verifyRazorpay = asyncHandler(async (req: Request, res: Response) =
 
 // Staff records a dispatch (courier + AWB) and flips the order to SHIPPED.
 export const ship = asyncHandler(async (req: Request, res: Response) => {
+  await assertOrderInScope(req, req.params.id);
   const data = await orderService.shipOrder(req.params.id, req.body, req.auth!.sub);
   await audit({
     actorType: req.auth!.type,
@@ -127,6 +160,7 @@ export const ship = asyncHandler(async (req: Request, res: Response) => {
 
 // Staff auto-books a shipment with the configured courier → SHIPPED.
 export const bookShipment = asyncHandler(async (req: Request, res: Response) => {
+  await assertOrderInScope(req, req.params.id);
   const data = await orderService.bookShipment(req.params.id, req.auth!.sub);
   await audit({
     actorType: req.auth!.type,
@@ -141,6 +175,7 @@ export const bookShipment = asyncHandler(async (req: Request, res: Response) => 
 
 // Staff cancels an order (restock + refund).
 export const cancel = asyncHandler(async (req: Request, res: Response) => {
+  await assertOrderInScope(req, req.params.id);
   const data = await orderService.cancelOrder(req.params.id, req.body?.reason, req.auth!.sub);
   await audit({
     actorType: req.auth!.type,
@@ -155,6 +190,7 @@ export const cancel = asyncHandler(async (req: Request, res: Response) => {
 
 // Staff marks the order delivered.
 export const deliver = asyncHandler(async (req: Request, res: Response) => {
+  await assertOrderInScope(req, req.params.id);
   const data = await orderService.markDelivered(req.params.id, req.auth!.sub);
   await audit({
     actorType: req.auth!.type,

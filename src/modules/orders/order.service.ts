@@ -907,7 +907,12 @@ export async function updateOrderStatus(id: string, status: OrderStatus, actorId
  * flows so stock and refunds are handled. Already cancelled/returned orders and
  * no-op transitions are skipped.
  */
-export async function bulkUpdateOrderStatus(ids: string[], status: OrderStatus, actorId?: string) {
+export async function bulkUpdateOrderStatus(
+  ids: string[],
+  status: OrderStatus,
+  actorId?: string,
+  scopeStoreId?: string | null,
+) {
   if (status === OrderStatus.CANCELLED || status === OrderStatus.RETURNED) {
     throw ApiError.badRequest(
       'Cancel or return orders individually so stock and refunds are handled',
@@ -915,7 +920,8 @@ export async function bulkUpdateOrderStatus(ids: string[], status: OrderStatus, 
   }
   return tenantTransaction(async (tx) => {
     const orders = await tx.order.findMany({
-      where: { id: { in: ids } },
+      // An agent scope (non-null) confines the batch to their store's orders.
+      where: { id: { in: ids }, ...(scopeStoreId ? { storeId: scopeStoreId } : {}) },
       select: { id: true, status: true },
     });
     let updated = 0;
